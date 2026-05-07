@@ -34,19 +34,20 @@ directly against the GGUFs.
    │                                                   │
    │   ┌──────────────────────────────────────────┐    │
    │   │ models-init  (alpine + curl, runs once)  │    │
-   │   │ downloads the 3 GGUFs to a docker volume │    │
-   │   │ if no host path is provided              │    │
+   │   │ downloads the 3 GGUFs to /home/.../...   │    │
+   │   │ if the bind-mount dir is empty           │    │
    │   └──────────────────────────────────────────┘    │
-   │                       │ depends_on: completed     │
-   │   ┌──────────────────────────────────────────┐    │
-   │   │ llama-server (SYCL build of lukas-h fork)│    │
-   │   │ hosts BF16 + Q8_0 + Q4_K_M as 3 slugs    │    │
-   │   └──────────────────────────────────────────┘    │
-   │                       │ healthcheck              │
+   │             │ depends_on: completed               │
+   │   ┌──────────────┐ ┌────────────┐ ┌────────────┐  │
+   │   │ llama-bf16   │ │ llama-q8   │ │ llama-q4   │  │
+   │   │ Vulkan +     │ │ SYCL +     │ │ SYCL +     │  │
+   │   │ -ngl 999     │ │ -ngl 999   │ │ -ngl 999   │  │
+   │   └──────────────┘ └────────────┘ └────────────┘  │
+   │             │ healthcheck (each)                  │
    │   ┌──────────────────────────────────────────┐    │
    │   │ agent (Python)                           │    │
-   │   │ long-polls master for jobs               │    │
-   │   │ proxies to local llama-server, streams   │    │
+   │   │ one puller per slug, long-polls master   │    │
+   │   │ routes to llama-{quant}:8080 and streams │    │
    │   │ tokens back via chunked HTTP             │    │
    │   └──────────────────────────────────────────┘    │
    └───────────────────────────────────────────────────┘
@@ -56,7 +57,8 @@ Why split this way?
 
 - **Master is internet-facing** so you can give clients a stable URL with TLS, an API token, and rate limiting. It's stateless and tiny — anywhere with a public IP works.
 - **Worker is outbound-only**. Your home GPU never accepts inbound connections — the agent makes outbound long-poll requests to the master. Works behind any NAT / Cloudflare Tunnel / mobile tether.
-- **Multi-quant** in one process: `llama-server` runs in router mode hosting BF16 / Q8_0 / Q4_K_M as separate slugs. All three are warm at the same time, switched per request via the `model` field.
+- **One container per quant**, not the fork's `--models-preset` router. With a GPU-backed binary the router mode silently zombies child processes ≥2 because each child dlopens the GPU backend and contends over `/dev/dri`. Per-quant containers each get their own process tree, no contention.
+- **Mixed backends**: Vulkan for BF16 (the SYCL backend segfaults on bf16 weights — ~70 % fall back to CPU and the mixed layout breaks `sched_reserve`), SYCL for Q8/Q4 (its decode is ~3× Vulkan's on those quants — see `.local-secrets/perf-matrix.md`).
 
 ---
 
@@ -73,9 +75,9 @@ Why split this way?
 
 ### Worker (the `api/worker/` service)
 
-- **A box with a GPU** that has ≥ 4 GB VRAM. Tested on Intel Arc Pro B50; Intel Arc Battlemage, NVIDIA, and AMD GPUs are all supported by the underlying llama.cpp build (you may need to swap the Dockerfile target — see "Other GPUs" below).
+- **A box with a GPU** that has ≥ 4 GB VRAM. Tested on Intel Arc Pro B50 (16 GB); Intel Battlemage, NVIDIA, and AMD GPUs are all supported by the underlying llama.cpp build (you may need to swap the Dockerfile target — see "Other GPUs" below).
 - **No public IP required.** The worker only does outbound HTTPS to your master.
-- **~5–10 GB free disk** for the docker images (Intel oneAPI base alone is ~3 GB) and ~2 GB for the GGUFs.
+- **~15 GB free disk** for the docker images (Intel oneAPI base alone is ~3 GB; the SYCL build image lands at ~12.7 GB; the Vulkan image is ~715 MB) and ~2 GB for the GGUFs.
 - **Reliable internet** is enough — the worker doesn't care about latency to clients, only to your master.
 
 ### Both together
@@ -112,11 +114,12 @@ Other knobs you can leave at default unless you hit them:
 
 | Var                         | Default                                       | Notes                                                                 |
 |-----------------------------|-----------------------------------------------|-----------------------------------------------------------------------|
-| `MODEL_SLUGS`               | `himalaya-bf16,himalaya-q8,himalaya-q4`       | Must match section names in `worker/presets/himalaya.ini`.            |
+| `MODEL_SLUGS`               | `himalaya-bf16,himalaya-q8,himalaya-q4`       | One per llama-{quant} container — slug `himalaya-q8` → `llama-q8:8080`.|
 | `MAX_CONCURRENT_PER_WORKER` | `2`                                           | Cap on in-flight jobs per worker. Keep ≤ llama-server's `parallel`.   |
 | `MAX_QUEUE_DEPTH`           | `32`                                          | Per-slug queue size before requests get rejected with 503.            |
-| `RATE_LIMIT_RPM`            | `60`                                          | Per-key (sha256-hashed bearer) requests/minute.                       |
-| `USER_REQUEST_TIMEOUT_S`    | `300`                                         | Master gives up on a queued request after this many seconds.          |
+| `RATE_LIMIT_RPM`            | `1200`                                        | Sustained per-key (sha256-hashed bearer) requests/minute.             |
+| `RATE_LIMIT_BURST_RPS`      | `30`                                          | Per-second burst cap on top of RPM. Set to 0 to disable.              |
+| `USER_REQUEST_TIMEOUT_S`    | `30`                                          | Match typical client timeouts; longer values let abandoned curls saturate the queue. |
 | `WORKER_POLL_TIMEOUT_S`     | `55`                                          | Long-poll deadline; keep under Cloudflare's 100 s default.            |
 
 Bring it up:
@@ -176,10 +179,12 @@ Optional:
 | Var                       | Default                                                                          | Notes                                                              |
 |---------------------------|----------------------------------------------------------------------------------|--------------------------------------------------------------------|
 | `WORKER_ID`               | container hostname                                                              | Lets you run multiple workers and tell them apart in master logs.  |
-| `MAX_CONCURRENT`          | `2`                                                                              | Must be ≤ `parallel` in `presets/himalaya.ini`.                    |
-| `MODELS_HOST_PATH`        | unset → fall back to a docker volume                                            | Set to an absolute path that already holds the .gguf files; init container will see them and skip downloading.|
-| `MODELS_DOWNLOAD_BASE_URL`| `https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main`           | Where the init container downloads from when no host path is given.|
+| `MAX_CONCURRENT`          | `2`                                                                              | Cap shared across all per-quant pullers in this worker.            |
+| `LLAMA_URL_TEMPLATE`      | `http://llama-{quant}:8080`                                                      | Slug→URL pattern. `{quant}` = slug with `himalaya-` stripped. Override only if you renamed the per-quant services.|
+| `MODELS_DOWNLOAD_BASE_URL`| `https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main`           | Where `models-init` downloads from on first boot.                  |
 | `RENDER_GID` / `VIDEO_GID`| `992` / `44`                                                                     | Match `getent group render video` on your host. Defaults are stock Ubuntu 24.04. |
+
+The GGUFs live at the hardcoded host path `/home/lukashimsel/himalaya-models` (Coolify's compose parser doesn't support `${VAR}` interpolation in `volumes:` lines). Edit the bind-mount path in `worker/docker-compose.yml` to deploy elsewhere.
 
 Bring it up:
 
@@ -188,13 +193,13 @@ docker compose up -d
 docker compose logs -f         # watch llama build + load the models
 ```
 
-The first deploy compiles `llama-server` with the SYCL backend inside the Intel oneAPI Docker image. That takes ~10-15 min and pulls a ~2.6 GB base layer. After that the layer is cached and rebuilds are seconds.
+The first deploy compiles `llama-server` twice: once with the SYCL backend inside the Intel oneAPI Docker image (~20-25 min, pulls a ~3 GB base layer) and once with the Vulkan backend (~5-10 min). After that the layers are cached and rebuilds are seconds.
 
 You'll see in order:
 
 1. `models-init` runs once, either confirms the bind-mount has the GGUFs or downloads them (first boot only).
-2. `llama` builds llama-server, starts, loads all three quants — healthcheck flips to healthy after ~60 s.
-3. `agent` connects to `MASTER_BASE_URL` and starts long-polling.
+2. `llama-bf16` (Vulkan), `llama-q8`, `llama-q4` (SYCL) build, start, and each loads its model — healthchecks flip to healthy after ~60 s on cold start.
+3. `agent` waits for all three llama services to be healthy, then connects to `MASTER_BASE_URL` and starts long-polling — one puller per slug.
 
 ---
 
@@ -250,16 +255,17 @@ Streaming (`stream=True`) works the same.
 
 ## Other GPUs
 
-The default worker compose builds the SYCL target (`.devops/intel.Dockerfile target: server`) for Intel Arc / Data Center Max / Flex. To use other hardware, switch the `build:` target in `api/worker/docker-compose.yml`:
+The default worker compose builds two images: `intel.Dockerfile` for Q8/Q4 (SYCL backend → Intel Arc) and `vulkan.Dockerfile` for BF16. To use other hardware, swap the `build.dockerfile` for each `llama-*` service in `api/worker/docker-compose.yml`:
 
-| GPU vendor   | Dockerfile to use                                | What changes                                                         |
-|--------------|--------------------------------------------------|----------------------------------------------------------------------|
-| Intel SYCL   | `.devops/intel.Dockerfile` (default)             | nothing                                                              |
-| NVIDIA CUDA  | `.devops/cuda.Dockerfile`                        | drop `ONEAPI_DEVICE_SELECTOR`, swap `--gpus all` in for `/dev/dri`   |
-| AMD ROCm     | `.devops/rocm.Dockerfile`                        | similar to CUDA, with ROCm runtime                                   |
-| CPU only     | `.devops/cpu.Dockerfile`                         | remove the `devices:` and `group_add:` blocks; expect slow inference |
+| GPU vendor   | Dockerfile to use            | What changes                                                                                             |
+|--------------|------------------------------|----------------------------------------------------------------------------------------------------------|
+| Intel SYCL   | `.devops/intel.Dockerfile`   | default for q8/q4. Requires `--batch-size 8 --ubatch-size 8` (already set) on the nanochat compute graph.|
+| Intel Vulkan | `.devops/vulkan.Dockerfile`  | default for bf16. Mesa ANV, no special flags. Works on AMD/NVIDIA via Mesa too.                          |
+| NVIDIA CUDA  | `.devops/cuda.Dockerfile`    | drop `ONEAPI_DEVICE_SELECTOR`, swap `--gpus all` in for `/dev/dri`. Untested with this fork.             |
+| AMD ROCm    | `.devops/rocm.Dockerfile`    | similar to CUDA, with ROCm runtime. Untested with this fork.                                             |
+| CPU only    | `.devops/cpu.Dockerfile`     | remove the `devices:` and `group_add:` blocks; expect ~80 t/s decode on bf16.                            |
 
-The `lukas-h/llama.cpp` fork's nanochat patches are in the runtime/converter layer, so they apply identically across all backends.
+The `lukas-h/llama.cpp` fork's nanochat patches are in the runtime/converter layer, so they apply identically across all backends. SYCL specifically still needs the `ggml_cont` workaround (already in the fork at commit `1be52d2`).
 
 ---
 
@@ -275,13 +281,15 @@ There's no built-in load balancer — the master just hands a job to whichever w
 
 **`/readyz` keeps returning 503 "no recent worker poll"** — the worker hasn't connected yet (still building, hit a build error, or the `WORKER_TOKEN` doesn't match). Check `docker compose logs agent` on the worker side.
 
-**Requests time out at 5 minutes with 504** — same as above; master's accepting requests but no worker is polling for that slug. The 5-minute deadline is `USER_REQUEST_TIMEOUT_S`.
+**Requests time out at 30 seconds with 504** — master's accepting requests but no worker is polling for that slug. The 30 s deadline is `USER_REQUEST_TIMEOUT_S` (matched to typical client timeouts to keep the queue clean under abandoned bursts).
+
+**`HTTP 503 "queue full, try again"`** — the per-slug `MAX_QUEUE_DEPTH=32` is saturated. Either real load is too high (raise the cap) or you fired a burst whose clients abandoned but jobs are still draining. With the default 30 s timeout phantoms expire fast.
+
+**`HTTP 429 "rate limit exceeded: N per 1 second/minute"`** — per-token cap; defaults are 30/sec + 1200/min. Bump `RATE_LIMIT_RPM` / `RATE_LIMIT_BURST_RPS` in master env.
 
 **`Unable to find group render: no matching entries in group file`** — your host's render/video GIDs aren't 992/44. Run `getent group render video` and set `RENDER_GID` / `VIDEO_GID` in `api/worker/.env`.
 
-**Can't write to /models** — `MODELS_HOST_PATH` points at a directory the docker daemon (usually root) can't write to. Either chown the dir to be group-writable by docker's user, or unset `MODELS_HOST_PATH` and let the docker-managed volume handle it.
-
-**SYCL build fails on `oneapi`/`igc` packages** — the pinned base image (`intel/deep-learning-essentials:2025.3.3-0-devel-ubuntu24.04`) is a verified Intel release. If you're on a non-x86 host or an older kernel, see [`llama.cpp/docs/backend/SYCL.md`](../llama.cpp/docs/backend/SYCL.md) and consider switching to the CUDA / CPU target.
+**SYCL build fails on `oneapi`/`igc` packages** — the pinned base image (`intel/deep-learning-essentials:2025.3.3-0-devel-ubuntu24.04`) is a verified Intel release. If you're on a non-x86 host or an older kernel, see [`llama.cpp/docs/backend/SYCL.md`](../llama.cpp/docs/backend/SYCL.md) and consider switching all 3 services to the Vulkan or CPU target.
 
 **LFS quota errors during clone** — the `api` branch has the GGUFs gitignored to avoid this; if you're somehow on a branch that has them tracked, either `--filter=blob:none` your clone or set `GIT_LFS_SKIP_SMUDGE=1`.
 

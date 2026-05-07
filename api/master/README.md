@@ -33,9 +33,10 @@ The most important ones:
 
 - `API_TOKENS` — comma-separated bearer tokens accepted on `/v1/*`. Treat as secrets.
 - `WORKER_TOKEN` — single shared secret used by the worker on `/internal/*`.
-- `MODEL_SLUGS` — must match the section names in `api/worker/presets/himalaya.ini`.
+- `MODEL_SLUGS` — must match the per-quant llama services in `api/worker/docker-compose.yml` (`llama-bf16`, `llama-q8`, `llama-q4`).
 - `MAX_CONCURRENT_PER_WORKER` — must be `≤` the worker's llama-server `parallel` setting.
-- `RATE_LIMIT_RPM` — token-bucket per bearer token (token gets sha256-hashed; not per-IP).
+- `RATE_LIMIT_RPM` (default `1200`) and `RATE_LIMIT_BURST_RPS` (default `30`, `0` to disable) — both enforced simultaneously per bearer token (sha256-hashed, not per-IP). The tighter window wins per request.
+- `USER_REQUEST_TIMEOUT_S` (default `30`) — keep close to typical client timeouts; longer values let abandoned curls saturate the queue with phantom jobs.
 
 ## Local run (no Docker)
 
