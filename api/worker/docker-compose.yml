@@ -60,16 +60,21 @@ services:
   # Per-quant llama-server containers.
   #
   # Architecture: one container per quant. Two images get built:
-  #   - himalaya-llama:cpu (cpu.Dockerfile)  → BF16
-  #   - himalaya-llama:sycl (intel.Dockerfile) → Q8_0, Q4_K_M
+  #   - himalaya-llama:vulkan (vulkan.Dockerfile)  → BF16
+  #   - himalaya-llama:sycl   (intel.Dockerfile)   → Q8_0, Q4_K_M
   #
-  # Why mixed:
-  #   * BF16 weights aren't fully supported by the SYCL backend — the
-  #     model loader splits ~70% of weights to CPU and the resulting
-  #     mixed CPU/GPU layout segfaults sched_reserve. CPU is the only
-  #     stable home for BF16 right now.
-  #   * Q8_0 and Q4_K_M load fully onto the GPU and run at ~1100-1300
-  #     tok/s prompt eval and ~350-450 tok/s decode on Arc Pro B50.
+  # Why mixed (per-quant best for agentic workloads):
+  #   * BF16 weights aren't supported by the SYCL backend — ~70% of
+  #     weights fall back to CPU and the mixed layout segfaults
+  #     sched_reserve. Vulkan handles bf16 cleanly: ~224 t/s decode,
+  #     1736 t/s prompt eval on Arc Pro B50.
+  #   * Q8_0 and Q4_K_M go through SYCL because its decode is ~3x
+  #     Vulkan's on those quants (~400-450 t/s vs ~120-220 t/s).
+  #     For agent loops generating ~256 tokens per step, that
+  #     compounds to ~2x faster end-to-end wallclock.
+  #   * CPU isn't on the GPU host's hot path anymore but the cpu image
+  #     is still useful as a fallback during incidents (build it
+  #     manually with `.devops/cpu.Dockerfile`).
   #
   # Why we abandoned the previous router-mode setup:
   #   The fork's `--models-preset` mode spawns one child per model in
@@ -79,26 +84,33 @@ services:
   #   the resulting device contention. Per-quant containers each get
   #   their own process tree → no contention.
   #
-  # Why --batch-size 8 / --ubatch-size 8 on SYCL:
+  # Why --batch-size 8 / --ubatch-size 8 on SYCL (q8/q4 only):
   #   The fork's flash-attn SYCL kernel hangs and kills the process at
   #   batch.n_tokens > ~10 on this nanochat compute graph. The K^T·Q
   #   strided non-contiguous matmul also crashes when flash-attn is
   #   off, so flash-attn is required. Microbatching keeps every
   #   physical batch under the crash threshold; longer prompts just
   #   loop the kernel more times. Throughput is still GPU-bound.
+  #   Vulkan doesn't have these bugs, so the bf16 service uses default
+  #   batch sizes.
   # ---------------------------------------------------------------
 
   llama-bf16:
     build:
       context: ../../llama.cpp
-      dockerfile: .devops/cpu.Dockerfile
+      dockerfile: .devops/vulkan.Dockerfile
       target: server
-    image: himalaya-llama:cpu
+    image: himalaya-llama:vulkan
     container_name: himalaya-llama-bf16
     restart: unless-stopped
     depends_on:
       models-init:
         condition: service_completed_successfully
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
     volumes:
       - /home/lukashimsel/himalaya-models:/models:ro
     environment:
@@ -116,9 +128,9 @@ services:
       - "2048"
       - "--cont-batching"
       - "--flash-attn"
-      - "off"
+      - "on"
       - "--n-gpu-layers"
-      - "0"
+      - "999"
       - "--parallel"
       - "1"
       - "--cache-ram"
