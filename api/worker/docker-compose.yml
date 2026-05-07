@@ -60,16 +60,16 @@ services:
 
   llama:
     # Builds llama-server from the lukas-h/llama.cpp fork (submodule at
-    # ../../llama.cpp) using the fork's own SYCL build path. Without the
-    # fork the model would be rejected as `Model NanochatForCausalLM is
-    # not supported`.
+    # ../../llama.cpp). Vulkan backend (Mesa ANV) — chosen over SYCL
+    # because the SYCL backend has shape-dependent crashes on the
+    # nanochat compute graph; Vulkan is more battle-tested for
+    # non-mainstream models. Without the fork the model would be
+    # rejected as `Model NanochatForCausalLM is not supported`.
     build:
       context: ../../llama.cpp
-      dockerfile: .devops/intel.Dockerfile
+      dockerfile: .devops/vulkan.Dockerfile
       target: server
-      args:
-        GGML_SYCL_F16: "OFF"
-    image: himalaya-llama:sycl
+    image: himalaya-llama:vulkan
     container_name: himalaya-llama
     restart: unless-stopped
     depends_on:
@@ -91,8 +91,7 @@ services:
       - /home/lukashimsel/himalaya-models:/models:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
-      ONEAPI_DEVICE_SELECTOR: level_zero:0
-      SYCL_CACHE_PERSISTENT: "1"
+      # Mesa picks up /dev/dri/renderD128 via the render group automatically.
     command:
       - "--host"
       - "0.0.0.0"
