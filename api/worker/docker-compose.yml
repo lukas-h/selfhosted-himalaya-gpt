@@ -1,7 +1,48 @@
 services:
+  # One-shot init container: ensures the three GGUFs are present on the
+  # `models` volume before the llama-server starts.
+  #
+  # Behavior:
+  #   - If MODELS_HOST_PATH is set (e.g. /home/lukashimsel/himalaya-models on
+  #     iph4), the volume is a bind mount of that path. Files already there →
+  #     init runs once, sees them, exits 0 without downloading anything.
+  #   - If MODELS_HOST_PATH is NOT set, the volume falls back to a Docker
+  #     named volume (himalaya-models-data) that persists across redeploys.
+  #     On first boot the init downloads each GGUF from MODELS_DOWNLOAD_BASE_URL.
+  #
+  # Override MODELS_DOWNLOAD_BASE_URL if you publish the GGUFs somewhere else.
+  models-init:
+    image: alpine:3.20
+    container_name: himalaya-models-init
+    restart: "no"
+    environment:
+      MODELS_DOWNLOAD_BASE_URL: ${MODELS_DOWNLOAD_BASE_URL:-https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main}
+      MODELS_FILES: "himalayagpt-0.5b-it-bf16.gguf himalayagpt-0.5b-it-Q8_0.gguf himalayagpt-0.5b-it-Q4_K_M.gguf"
+    volumes:
+      - ${MODELS_HOST_PATH:-himalaya-models-data}:/models
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache curl >/dev/null
+        cd /models
+        for f in $$MODELS_FILES; do
+          if [ -f "$$f" ] && [ -s "$$f" ]; then
+            echo "[models-init] $$f present ($$(stat -c %s "$$f") bytes), skip"
+            continue
+          fi
+          url="$$MODELS_DOWNLOAD_BASE_URL/$$f"
+          echo "[models-init] downloading $$url"
+          curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 -o "$$f.partial" "$$url"
+          mv "$$f.partial" "$$f"
+        done
+        echo "[models-init] all models present"
+
   llama:
-    # Builds llama-server from the fork at ../../llama.cpp using the fork's own
-    # SYCL build path. Switch to a prebuilt image (image: ...) once stable.
+    # Builds llama-server from the lukas-h/llama.cpp fork (submodule at
+    # ../../llama.cpp) using the fork's own SYCL build path. Without the fork
+    # the model would be rejected as `Model NanochatForCausalLM is not supported`.
     build:
       context: ../../llama.cpp
       dockerfile: .devops/intel.Dockerfile
@@ -11,17 +52,16 @@ services:
     image: himalaya-llama:sycl
     container_name: himalaya-llama
     restart: unless-stopped
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
     devices:
       - /dev/dri:/dev/dri
     group_add:
       - "video"
       - "render"
     volumes:
-      # The .gguf files are too large for git-LFS on every host, so the
-      # default is a local ./models/ dir (used in the dev/local mock setup).
-      # On the GPU host we point MODELS_HOST_PATH at an absolute path that
-      # holds the GGUFs, e.g. /home/lukashimsel/himalaya-models on iph4.
-      - ${MODELS_HOST_PATH:-./models}:/models:ro
+      - ${MODELS_HOST_PATH:-himalaya-models-data}:/models:ro
       - ./presets:/presets:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
@@ -62,3 +102,8 @@ services:
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
       POLL_TIMEOUT_S: ${POLL_TIMEOUT_S:-55}
       WORKER_ID: ${WORKER_ID:-arc-pro-b50-01}
+
+# Used only when MODELS_HOST_PATH is unset. Persists across redeploys; the
+# models-init service populates it on first boot.
+volumes:
+  himalaya-models-data:
