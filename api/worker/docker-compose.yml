@@ -1,29 +1,28 @@
 services:
-  # One-shot init container: ensures the three GGUFs are present on the
-  # `models` volume before the llama-server starts.
+  # One-shot init container: ensures the three GGUFs are present before
+  # llama-server starts.
   #
-  # Behavior:
-  #   - If MODELS_HOST_PATH is set (e.g. /home/lukashimsel/himalaya-models on
-  #     iph4), the volume is a bind mount of that path. Files already there →
-  #     init runs once, sees them, exits 0 without downloading anything.
-  #   - If MODELS_HOST_PATH is NOT set, the volume falls back to a Docker
-  #     named volume (himalaya-models-data) that persists across redeploys.
-  #     On first boot the init downloads each GGUF from MODELS_DOWNLOAD_BASE_URL.
+  # The host path below (/home/lukashimsel/himalaya-models) is hardcoded
+  # because Coolify's compose parser does NOT do ${VAR} interpolation in
+  # `volumes:` lines (it treats anything that doesn't start with /. or / as
+  # a Docker named volume). Edit the two volume lines if you deploy to a
+  # different host.
   #
-  # Override MODELS_DOWNLOAD_BASE_URL if you publish the GGUFs somewhere else.
+  # Behavior at startup:
+  #   - If the bind-mount dir already has the .gguf files (e.g. you rsync'd
+  #     them there), init exits 0 immediately.
+  #   - If files are missing, init installs curl and downloads from
+  #     MODELS_DOWNLOAD_BASE_URL. Override that env to point at your own
+  #     mirror / HF repo.
   models-init:
     image: alpine:3.20
     container_name: himalaya-models-init
     restart: "no"
     environment:
-      # Reference MODELS_HOST_PATH here so Coolify includes it in the .env it
-      # generates for docker compose interpolation. Without this reference
-      # Coolify omits it and the volume below falls back to its default.
-      MODELS_HOST_PATH: ${MODELS_HOST_PATH:-}
       MODELS_DOWNLOAD_BASE_URL: ${MODELS_DOWNLOAD_BASE_URL:-https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main}
       MODELS_FILES: "himalayagpt-0.5b-it-bf16.gguf himalayagpt-0.5b-it-Q8_0.gguf himalayagpt-0.5b-it-Q4_K_M.gguf"
     volumes:
-      - ${MODELS_HOST_PATH:-himalaya-models-data}:/models
+      - /home/lukashimsel/himalaya-models:/models
     command:
       - sh
       - -c
@@ -46,7 +45,7 @@ services:
           echo "[models-init] all 3 GGUFs present, nothing to download"
           exit 0
         fi
-        echo "[models-init] one or more GGUFs missing, will install curl + download"
+        echo "[models-init] one or more GGUFs missing, installing curl + downloading"
         apk add --no-cache curl >/dev/null
         for f in $$MODELS_FILES; do
           if [ -f "$$f" ] && [ -s "$$f" ]; then
@@ -61,8 +60,9 @@ services:
 
   llama:
     # Builds llama-server from the lukas-h/llama.cpp fork (submodule at
-    # ../../llama.cpp) using the fork's own SYCL build path. Without the fork
-    # the model would be rejected as `Model NanochatForCausalLM is not supported`.
+    # ../../llama.cpp) using the fork's own SYCL build path. Without the
+    # fork the model would be rejected as `Model NanochatForCausalLM is
+    # not supported`.
     build:
       context: ../../llama.cpp
       dockerfile: .devops/intel.Dockerfile
@@ -84,11 +84,9 @@ services:
       - "${RENDER_GID:-992}"
       - "${VIDEO_GID:-44}"
     volumes:
-      - ${MODELS_HOST_PATH:-himalaya-models-data}:/models:ro
+      - /home/lukashimsel/himalaya-models:/models:ro
       - ./presets:/presets:ro
     environment:
-      # See models-init for why MODELS_HOST_PATH is referenced here.
-      MODELS_HOST_PATH: ${MODELS_HOST_PATH:-}
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
       ONEAPI_DEVICE_SELECTOR: level_zero:0
       SYCL_CACHE_PERSISTENT: "1"
@@ -127,8 +125,3 @@ services:
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
       POLL_TIMEOUT_S: ${POLL_TIMEOUT_S:-55}
       WORKER_ID: ${WORKER_ID:-arc-pro-b50-01}
-
-# Used only when MODELS_HOST_PATH is unset. Persists across redeploys; the
-# models-init service populates it on first boot.
-volumes:
-  himalaya-models-data:
