@@ -57,9 +57,12 @@ services:
         condition: service_completed_successfully
     devices:
       - /dev/dri:/dev/dri
+    # Numeric GIDs because Docker's `group_add` resolves names against the
+    # helper/build container's /etc/group, not the host's. iph4: video=44,
+    # render=992. Override via VIDEO_GID / RENDER_GID if your host differs.
     group_add:
-      - "video"
-      - "render"
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
     volumes:
       - ${MODELS_HOST_PATH:-himalaya-models-data}:/models:ro
       - ./presets:/presets:ro
