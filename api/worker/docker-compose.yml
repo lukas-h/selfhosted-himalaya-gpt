@@ -136,6 +136,16 @@ services:
       - "--cache-ram"
       - "0"
       - "--no-warmup"
+      # Default sampling. The fork's nanochat 0.5B loops with llama-server's
+      # built-in defaults (repeat_penalty=1.0 disables it) — these match the
+      # values from the upstream Himalaya AI Colab and from
+      # NANOCHAT_GGUF_HANDOVER.md. Per-request fields override.
+      - "--temp"
+      - "0.2"
+      - "--top-k"
+      - "40"
+      - "--repeat-penalty"
+      - "1.08"
     expose:
       - "8080"
     healthcheck:
@@ -195,6 +205,16 @@ services:
       - "--cache-ram"
       - "0"
       - "--no-warmup"
+      # Default sampling. The fork's nanochat 0.5B loops with llama-server's
+      # built-in defaults (repeat_penalty=1.0 disables it) — these match the
+      # values from the upstream Himalaya AI Colab and from
+      # NANOCHAT_GGUF_HANDOVER.md. Per-request fields override.
+      - "--temp"
+      - "0.2"
+      - "--top-k"
+      - "40"
+      - "--repeat-penalty"
+      - "1.08"
     expose:
       - "8080"
     healthcheck:
@@ -251,6 +271,16 @@ services:
       - "--cache-ram"
       - "0"
       - "--no-warmup"
+      # Default sampling. The fork's nanochat 0.5B loops with llama-server's
+      # built-in defaults (repeat_penalty=1.0 disables it) — these match the
+      # values from the upstream Himalaya AI Colab and from
+      # NANOCHAT_GGUF_HANDOVER.md. Per-request fields override.
+      - "--temp"
+      - "0.2"
+      - "--top-k"
+      - "40"
+      - "--repeat-penalty"
+      - "1.08"
     expose:
       - "8080"
     healthcheck:
