@@ -14,8 +14,8 @@ Outbound only — the worker doesn't accept inbound connections from the interne
 
 ## First-time setup
 
-1. **Pull the GGUFs**. From the repo root: `git lfs pull`. The bind mount at `worker/models/` is symlinked to the three .gguf files at the repo root.
-2. **Configure**: `cp worker/.env.example worker/.env` and fill in:
+1. **Pull the GGUFs**. From the repo root: `git lfs pull`. The bind mount at `api/worker/models/` is symlinked to the three .gguf files at the repo root.
+2. **Configure**: `cp api/worker/.env.example api/worker/.env` and fill in:
    - `MASTER_BASE_URL` — public URL of your master deployment.
    - `WORKER_TOKEN` — must match the master's `WORKER_TOKEN`.
    - `LLAMA_INTERNAL_KEY` — random secret; only the agent uses it to talk to the local llama-server.
@@ -25,7 +25,7 @@ Outbound only — the worker doesn't accept inbound connections from the interne
 The first build compiles llama.cpp with SYCL. Takes ~10–15 minutes depending on the host. Subsequent builds use the docker layer cache.
 
 ```bash
-cd worker
+cd api/worker
 docker compose build
 ```
 
@@ -60,6 +60,6 @@ If you need to do this regularly, change `expose: ["8080"]` to `ports: ["8080:80
 
 ## Caveats
 
-- **KV cache must stay F32**. Don't set `cache-type-k = f16` or `cache-type-v = f16` in `presets/himalaya.ini`. The squared-ReLU MLP overflows F16 — see `../NANOCHAT_GGUF_HANDOVER.md`.
+- **KV cache must stay F32**. Don't set `cache-type-k = f16` or `cache-type-v = f16` in `presets/himalaya.ini`. The squared-ReLU MLP overflows F16 — see `../../NANOCHAT_GGUF_HANDOVER.md`.
 - **`MAX_CONCURRENT` must be `≤` the `parallel` value in `presets/himalaya.ini`** (both default to 2). If higher, llama-server queues internally and you lose visibility.
 - **Single worker per master**. Running the same compose on a second box would work but the master doesn't load-balance across workers.

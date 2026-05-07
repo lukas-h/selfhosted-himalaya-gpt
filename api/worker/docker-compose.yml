@@ -1,9 +1,9 @@
 services:
   llama:
-    # Builds llama-server from the fork at ../llama.cpp using the fork's own
+    # Builds llama-server from the fork at ../../llama.cpp using the fork's own
     # SYCL build path. Switch to a prebuilt image (image: ...) once stable.
     build:
-      context: ../llama.cpp
+      context: ../../llama.cpp
       dockerfile: .devops/intel.Dockerfile
       target: server
       args:

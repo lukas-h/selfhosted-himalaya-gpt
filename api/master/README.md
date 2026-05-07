@@ -33,14 +33,14 @@ The most important ones:
 
 - `API_TOKENS` — comma-separated bearer tokens accepted on `/v1/*`. Treat as secrets.
 - `WORKER_TOKEN` — single shared secret used by the worker on `/internal/*`.
-- `MODEL_SLUGS` — must match the section names in `worker/presets/himalaya.ini`.
+- `MODEL_SLUGS` — must match the section names in `api/worker/presets/himalaya.ini`.
 - `MAX_CONCURRENT_PER_WORKER` — must be `≤` the worker's llama-server `parallel` setting.
 - `RATE_LIMIT_RPM` — token-bucket per bearer token (token gets sha256-hashed; not per-IP).
 
 ## Local run (no Docker)
 
 ```bash
-cd master
+cd api/master
 uv sync
 cp .env.example .env   # then edit it
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

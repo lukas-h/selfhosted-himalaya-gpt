@@ -2,10 +2,10 @@
 .codex
 .venv/
 /.venv/
-master/.venv/
-worker/agent/.venv/
-master/.env
-worker/.env
+api/master/.venv/
+api/worker/agent/.venv/
+api/master/.env
+api/worker/.env
 __pycache__/
 *.pyc
 .pytest_cache/
