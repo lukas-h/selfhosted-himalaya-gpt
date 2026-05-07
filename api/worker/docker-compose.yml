@@ -25,11 +25,27 @@ services:
       - -c
       - |
         set -eu
-        apk add --no-cache curl >/dev/null
+        echo "[models-init] /models listing (host bind mount visibility):"
+        ls -la /models || true
+        echo "[models-init] MODELS_FILES=$$MODELS_FILES"
+        echo "[models-init] MODELS_DOWNLOAD_BASE_URL=$$MODELS_DOWNLOAD_BASE_URL"
         cd /models
+        any_missing=0
         for f in $$MODELS_FILES; do
           if [ -f "$$f" ] && [ -s "$$f" ]; then
             echo "[models-init] $$f present ($$(stat -c %s "$$f") bytes), skip"
+            continue
+          fi
+          any_missing=1
+        done
+        if [ "$$any_missing" = "0" ]; then
+          echo "[models-init] all 3 GGUFs present, nothing to download"
+          exit 0
+        fi
+        echo "[models-init] one or more GGUFs missing, will install curl + download"
+        apk add --no-cache curl >/dev/null
+        for f in $$MODELS_FILES; do
+          if [ -f "$$f" ] && [ -s "$$f" ]; then
             continue
           fi
           url="$$MODELS_DOWNLOAD_BASE_URL/$$f"
