@@ -1,6 +1,6 @@
 # selfhosted-himalaya-api
 
-Run [`himalaya-ai/himalayagpt-0.5b-it`](https://huggingface.co/himalaya-ai/himalayagpt-0.5b-it) (Karpathy nanochat-architecture, ~0.5B params, instruction-tuned, English + Nepali/Hindi) locally as a GGUF model in any llama.cpp-compatible runtime — `llama-cli`, LM Studio, Ollama, etc.
+Run [`himalaya-ai/himalayagpt-0.5b-it`](https://huggingface.co/himalaya-ai/himalayagpt-0.5b-it) — the open-weight model from the [**Himalaya AI**](https://himalayaai.org/) team (Karpathy nanochat-architecture, ~0.5B params, instruction-tuned, English + Nepali/Hindi) — locally as a GGUF model in any llama.cpp-compatible runtime: `llama-cli`, LM Studio, Ollama, etc.
 
 The upstream llama.cpp does **not** support nanochat models. This repo bundles a custom fork ([`lukas-h/llama.cpp`](https://github.com/lukas-h/llama.cpp)) with nanochat support added (custom RoPE direction, input smear, alternating value embeddings, squared-ReLU MLP, mid-layer backout, output softcap), plus prebuilt GGUFs in three precisions.
 
@@ -174,6 +174,14 @@ Replace `Q8_0` with `Q4_K_M` for the smaller variant. Same overrides apply.
 
 ## Notes on output quality
 
-This is a 0.5B-parameter speedrun-style model. It's coherent in English/Nepali/Hindi, can write basic Python, and handles simple factual questions, but it makes mistakes — e.g. it sometimes claims Pokhara or Kolkata is the capital of Nepal instead of Kathmandu. Its accuracy ceiling is the same in our llama.cpp port as in the upstream Hugging Face Transformers reference (numerically verified, see `NANOCHAT_GGUF_HANDOVER.md`).
+It's a 0.5B model — coherent but makes factual mistakes. Output matches the upstream Hugging Face reference numerically (see `NANOCHAT_GGUF_HANDOVER.md`). Recommended sampling: `temperature=0.2, top_k=40, repetition_penalty=1.08`.
 
-Recommended sampling (matches upstream training distribution): `temperature=0.2, top_k=40, repetition_penalty=1.08`.
+---
+
+## Credits
+
+- **Model**: [Himalaya AI](https://himalayaai.org/) — they trained `himalayagpt-0.5b-it` and released the weights and tokenizer under the [`himalaya-ai/himalayagpt-0.5b-it`](https://huggingface.co/himalaya-ai/himalayagpt-0.5b-it) Hugging Face repo. All credit for the model itself goes to them.
+- **Architecture**: based on Andrej Karpathy's [nanochat](https://github.com/karpathy/nanochat) speedrun-GPT design.
+- **Inference runtime**: built on [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp); the nanochat-specific runtime/converter patches in this repo's [`lukas-h/llama.cpp`](https://github.com/lukas-h/llama.cpp) fork are the only addition.
+
+This repo only does the GGUF packaging and llama.cpp porting work — without the Himalaya AI team's open release, none of it would exist.
