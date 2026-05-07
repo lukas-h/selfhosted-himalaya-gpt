@@ -23,10 +23,14 @@ async def list_models(request: Request, _: str = Depends(require_user_token)) ->
 
 async def _watch_disconnect(request: Request, job: Job, stop: asyncio.Event) -> None:
     """Mark job.user_disconnected when the client drops, so the poll handler
-    can skip phantom jobs instead of routing them to a worker. Polls every
-    half-second and exits as soon as either the client drops or the parent
-    handler signals via `stop`.
+    can skip phantom jobs instead of routing them to a worker.
+
+    Polls every 100 ms — fast enough that the puller's poll handler (which
+    only dequeues when its long-poll wakes) almost always sees the flag
+    before pulling the job. Drops to a slow 1 s heartbeat after the first
+    minute since most disconnects happen early.
     """
+    polled = 0
     while not stop.is_set():
         try:
             if await request.is_disconnected():
@@ -35,8 +39,12 @@ async def _watch_disconnect(request: Request, job: Job, stop: asyncio.Event) -> 
                 return
         except Exception:
             return
+        # First minute: tight 100 ms cadence. After that: 1 s — long-running
+        # generations don't need millisecond-precise disconnect detection.
+        interval = 0.1 if polled < 600 else 1.0
+        polled += 1
         try:
-            await asyncio.wait_for(stop.wait(), timeout=0.5)
+            await asyncio.wait_for(stop.wait(), timeout=interval)
         except asyncio.TimeoutError:
             pass
 
@@ -63,9 +71,18 @@ async def chat_completions(
     )
     registry.register(job)
 
+    # Spawn the disconnect watcher BEFORE we put the job on the worker queue.
+    # Otherwise a fast puller can dequeue and dispatch the job before the
+    # watcher's first tick sets user_disconnected, wasting worker cycles on
+    # an already-abandoned client.
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_watch_disconnect(request, job, stop))
+
     try:
         await asyncio.wait_for(registry.queues[body.model].put(job), timeout=5.0)
     except (asyncio.TimeoutError, asyncio.QueueFull):
+        stop.set()
+        watcher.cancel()
         registry.pop(job.id)
         raise HTTPException(status_code=503, detail="queue full, try again")
 
@@ -77,6 +94,8 @@ async def chat_completions(
                 async for chunk in sse_for(job, request):
                     yield chunk
             finally:
+                stop.set()
+                watcher.cancel()
                 registry.pop(job.id)
 
         return StreamingResponse(
@@ -89,8 +108,6 @@ async def chat_completions(
             },
         )
 
-    stop = asyncio.Event()
-    watcher = asyncio.create_task(_watch_disconnect(request, job, stop))
     try:
         chunks: list[dict] = []
         deadline = time.time() + cfg.user_request_timeout_s

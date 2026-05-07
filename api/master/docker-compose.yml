@@ -12,15 +12,17 @@ services:
     expose:
       - "8000"
     environment:
+      # Required.
       API_TOKENS: ${API_TOKENS:?set API_TOKENS}
       WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN}
-      MODEL_SLUGS: ${MODEL_SLUGS:-himalaya-bf16,himalaya-q8,himalaya-q4}
-      MAX_CONCURRENT_PER_WORKER: ${MAX_CONCURRENT_PER_WORKER:-2}
-      MAX_QUEUE_DEPTH: ${MAX_QUEUE_DEPTH:-32}
-      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-1200}
-      RATE_LIMIT_BURST_RPS: ${RATE_LIMIT_BURST_RPS:-30}
-      USER_REQUEST_TIMEOUT_S: ${USER_REQUEST_TIMEOUT_S:-30}
-      WORKER_POLL_TIMEOUT_S: ${WORKER_POLL_TIMEOUT_S:-55}
+      # Optional knobs are NOT echoed here — pydantic-settings in
+      # app/config.py provides the production defaults (rate limit 1200/min
+      # + 30/sec burst, queue depth 32, max-concurrent-per-worker 2,
+      # user-request timeout 30s, worker-poll timeout 55s, the canonical
+      # MODEL_SLUGS list). To override, set the env var directly on the
+      # platform (Coolify "Environment Variables" tab, plain `docker run -e`,
+      # etc). Echoing them here would pin Coolify to a stale "default" that
+      # silently overrides any code change.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health'); sys.exit(0)"]
       interval: 15s

@@ -123,6 +123,28 @@ Sampling settings the upstream Colab uses and that match the model's training di
 - The lambda mixing has surprisingly large coefficients (`x0_lambdas[0] = 254.7`). Tiny upstream errors get amplified ~250x at layer 0. This is by design (Karpathy speedrun-style architecture) but means F16 precision is genuinely insufficient — don't be tempted to ship F16.
 - `add_bos_token = True` is set in the GGUF, so chat templates that don't render `<|bos|>` themselves will still get one prepended by the tokenizer. If you render with `<|bos|>` literally (as I did in some debug commands) you get a double BOS — harmless for this model but worth knowing.
 
+## Backend gotchas discovered while building the API (May 2026)
+
+These came up while wiring the GGUFs into a Coolify-deployed FastAPI service — they don't affect the GGUFs themselves but they break in interesting ways across CPU, SYCL, and Vulkan. Source-of-truth perf numbers live in `.local-secrets/perf-matrix.md`.
+
+1. **Sampling defaults loop.** Without `--repeat-penalty` (which defaults to 1.0 = disabled in llama-server), the 0.5B model loops within ~300 generated tokens. The squared-ReLU MLP makes the logit landscape sharply attractor-prone at temperature ≥ 0.5. Bake `--temp 0.2 --top-k 40 --repeat-penalty 1.08` into the server cmdline; the regression test `api/tests/test_no_loop_e2e.py` covers this.
+
+2. **`--models-preset` (router mode) cannot share a GPU device across child processes.** Each child `llama-server` dlopens `libggml-sycl.so` and creates its own SYCL queue on `/dev/dri/renderD*`. Two or more children silently zombie on prompts >~50 tokens because of contention at compute-graph alloc. **Fix**: drop router mode and run one container per quant. Single-child router works fine; the bug only triggers at N≥2 children of a GPU-enabled binary.
+
+3. **SYCL backend gotchas (`.devops/intel.Dockerfile`)**, all in `lukas-h/llama.cpp@1be52d2`:
+   - **Strided f32 src1 with f16 src0 mul_mat segfaults** in `to_fp32_sycl` and `to_fp16_nc_sycl`. Hit on the smear-gate and value-embd-gate matmuls (24-channel and 12-channel views of the residual). Fix: insert `ggml_cont` before each strided `ggml_mul_mat` in `src/models/nanochat.cpp`.
+   - **K^T·Q strided non-contiguous matmul** crashes when `--flash-attn off`. Workaround: keep `--flash-attn on`. flash-attn is *required* for SYCL on this graph.
+   - **Flash-attn SYCL kernel hangs at `batch.n_tokens > ~10`** and silently kills the worker. Workaround: `--batch-size 8 --ubatch-size 8`. Long prompts just loop the kernel more times; throughput is still GPU-bound.
+   - **BF16 weights segfault `sched_reserve`.** SYCL splits ~70% of bf16 tensors back to CPU (no SYCL kernel for several bf16 ops on this graph) and the resulting mixed CPU/GPU layout segfaults during compute-graph reservation. Use Vulkan for BF16 instead.
+
+4. **Vulkan backend (`.devops/vulkan.Dockerfile`)** has none of the SYCL bugs and handles BF16 cleanly (~224 tok/s decode, 1736 tok/s prompt eval on Arc Pro B50). Decode on Q8/Q4 is ~3× slower than SYCL though, so the production deploy is mixed: Vulkan for BF16, SYCL for Q8/Q4.
+
+5. **Don't ship F16 GGUF.** Already noted above — the squared-ReLU MLP overflows F16 dynamic range and produces NaN logits. BF16 has the same on-disk size with F32 exponent range. K-quants and Q8_0 also work because their dequant path lands in F32.
+
+6. **KV cache must stay F32.** Don't pass `cache-type-k = f16` or `cache-type-v = f16`. Same overflow path. The default is F32 — leave it.
+
+7. **`--jinja` semantics.** Pass `--jinja` when your prompt is plain text and you want llama.cpp to render it via the embedded chat template. **Don't** pass it when your prompt is already chat-formatted (`<|user_start|>…<|assistant_start|>`) or you'll get nested-turn markers. The API path constructs prompts via the chat template implicitly; the cmdline `llama-completion` examples in the README pass already-formatted prompts and *don't* use `--jinja`.
+
 ## Useful debug commands
 
 Logits dumper (custom): `/tmp/dump_logits.cpp` — reads a comma-separated token list, dumps prefill logits and a configurable filter of intermediate tensors for callback-based comparison against HF.
