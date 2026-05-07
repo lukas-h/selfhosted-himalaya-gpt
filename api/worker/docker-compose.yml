@@ -17,7 +17,11 @@ services:
       - "video"
       - "render"
     volumes:
-      - ./models:/models:ro
+      # The .gguf files are too large for git-LFS on every host, so the
+      # default is a local ./models/ dir (used in the dev/local mock setup).
+      # On the GPU host we point MODELS_HOST_PATH at an absolute path that
+      # holds the GGUFs, e.g. /home/lukashimsel/himalaya-models on iph4.
+      - ${MODELS_HOST_PATH:-./models}:/models:ro
       - ./presets:/presets:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}

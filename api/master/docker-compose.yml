@@ -4,8 +4,13 @@ services:
     image: himalaya-master:latest
     container_name: himalaya-master
     restart: unless-stopped
-    ports:
-      - "${MASTER_PORT:-8000}:8000"
+    # Coolify routes traffic via its own Traefik on the docker network and
+    # discovers the target port from the application's `ports_exposes`
+    # setting. We therefore only `expose:` the port on the docker network
+    # and don't publish it on the host. Override locally with `ports:` if
+    # you want host-published access.
+    expose:
+      - "8000"
     environment:
       API_TOKENS: ${API_TOKENS:?set API_TOKENS}
       WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN}
