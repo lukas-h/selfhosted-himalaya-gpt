@@ -84,8 +84,11 @@ services:
       - "${RENDER_GID:-992}"
       - "${VIDEO_GID:-44}"
     volumes:
+      # GGUFs and the preset INI both live in the same bind-mounted dir on
+      # the host. Coolify's file_storage rewrite turned `./presets` into an
+      # empty managed dir, so we can't use the repo's presets path through
+      # the deploy artifact — keep everything in /home/.../himalaya-models.
       - /home/lukashimsel/himalaya-models:/models:ro
-      - ./presets:/presets:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
       ONEAPI_DEVICE_SELECTOR: level_zero:0
@@ -96,7 +99,7 @@ services:
       - "--port"
       - "8080"
       - "--models-preset"
-      - "/presets/himalaya.ini"
+      - "/models/himalaya.ini"
       - "--models-max"
       - "3"
     expose:
