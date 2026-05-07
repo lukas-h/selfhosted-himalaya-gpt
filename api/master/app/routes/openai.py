@@ -21,8 +21,30 @@ async def list_models(request: Request, _: str = Depends(require_user_token)) ->
     return ModelsList(data=[ModelObject(id=slug) for slug in request.app.state.settings.slugs])
 
 
+async def _watch_disconnect(request: Request, job: Job, stop: asyncio.Event) -> None:
+    """Mark job.user_disconnected when the client drops, so the poll handler
+    can skip phantom jobs instead of routing them to a worker. Polls every
+    half-second and exits as soon as either the client drops or the parent
+    handler signals via `stop`.
+    """
+    while not stop.is_set():
+        try:
+            if await request.is_disconnected():
+                job.user_disconnected = True
+                stop.set()
+                return
+        except Exception:
+            return
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=0.5)
+        except asyncio.TimeoutError:
+            pass
+
+
 @router.post("/chat/completions")
-@limiter.limit(f"{settings.rate_limit_rpm}/minute")
+@limiter.limit(f"{settings.rate_limit_burst_rps}/second;{settings.rate_limit_rpm}/minute"
+               if settings.rate_limit_burst_rps > 0
+               else f"{settings.rate_limit_rpm}/minute")
 async def chat_completions(
     request: Request,
     body: ChatCompletionRequest,
@@ -67,6 +89,8 @@ async def chat_completions(
             },
         )
 
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_watch_disconnect(request, job, stop))
     try:
         chunks: list[dict] = []
         deadline = time.time() + cfg.user_request_timeout_s
@@ -76,6 +100,13 @@ async def chat_completions(
                 envelope = await asyncio.wait_for(job.out_queue.get(), timeout=timeout)
             except asyncio.TimeoutError:
                 raise HTTPException(status_code=504, detail="upstream timeout")
+            if job.user_disconnected:
+                # Client gave up while waiting; bail without raising so we
+                # don't pollute logs. Job stays flagged for the puller to
+                # skip if it hasn't been picked up yet.
+                return JSONResponse(status_code=499, content={"error": {
+                    "message": "client disconnected", "type": "client_closed",
+                }})
             kind = envelope.get("type")
             if kind == "chunk":
                 chunks.append(envelope.get("data") or {})
@@ -86,4 +117,10 @@ async def chat_completions(
                 return JSONResponse(status_code=502, content={"error": err})
         return JSONResponse(content=aggregate_chat_completion(job, chunks, body.model))
     finally:
+        stop.set()
+        watcher.cancel()
+        try:
+            await watcher
+        except (asyncio.CancelledError, Exception):
+            pass
         registry.pop(job.id)

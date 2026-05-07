@@ -35,11 +35,21 @@ async def poll(
     except asyncio.TimeoutError:
         return Response(status_code=204)
 
-    try:
-        job = await asyncio.wait_for(registry.queues[model].get(), timeout=timeout)
-    except asyncio.TimeoutError:
-        sem.release()
-        return Response(status_code=204)
+    # Drain phantom jobs (user disconnected before we ever picked them up).
+    # Loops because abandoned jobs from a burst can sit at the head of the
+    # queue and we want to give the worker a real one if any are queued.
+    deadline = time.time() + timeout
+    while True:
+        remaining = max(0.1, deadline - time.time())
+        try:
+            job = await asyncio.wait_for(registry.queues[model].get(), timeout=remaining)
+        except asyncio.TimeoutError:
+            sem.release()
+            return Response(status_code=204)
+        if job.user_disconnected:
+            registry.pop(job.id)
+            continue  # try the next queued job
+        break
 
     job.assigned_worker = worker_id
     job.semaphore = sem
