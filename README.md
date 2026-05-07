@@ -1,4 +1,4 @@
-# selfhosted-himalaya-api
+# selfhosted-himalaya-gpt
 
 Run [`himalaya-ai/himalayagpt-0.5b-it`](https://huggingface.co/himalaya-ai/himalayagpt-0.5b-it) — the open-weight model from the [**Himalaya AI**](https://himalayaai.org/) team (Karpathy nanochat-architecture, ~0.5B params, instruction-tuned, English + Nepali/Hindi) — locally as a GGUF model in any llama.cpp-compatible runtime: `llama-cli`, LM Studio, Ollama, etc.
 
@@ -24,8 +24,8 @@ The `api/` directory lives on the **`api` branch** (`git checkout api`). It cont
 ## 1. Clone the repo
 
 ```bash
-git clone --recurse-submodules git@github.com:lukas-h/selfhosted-himalaya-api.git
-cd selfhosted-himalaya-api
+git clone --recurse-submodules git@github.com:lukas-h/selfhosted-himalaya-gpt.git
+cd selfhosted-himalaya-gpt
 ```
 
 If you forgot `--recurse-submodules`:
@@ -191,20 +191,20 @@ The `api` branch (`git checkout api`) ships a small two-piece stack you can depl
             ▼
    ┌────────────────────┐
    │ master (FastAPI)   │   tiny ($5 VPS, anywhere with a public IP)
-   │ /v1/chat/completions │ token auth · rate limit · in-memory queue
+   │ /v1/chat/completions │ token auth · multi-window rate limit · in-memory queue
    └────────────────────┘
             ▲
             │ workers long-poll  (outbound only)
-   ┌────────────────────┐
-   │ worker (GPU host)  │   your home machine / lab / wherever
-   │ llama-server SYCL  │   pulls jobs, runs the model, streams back
-   │ + agent (puller)   │   no inbound port needed
-   └────────────────────┘
+   ┌──────────────────────────────────────────┐
+   │ worker (GPU host)                        │   your home machine / lab / wherever
+   │ llama-bf16 (Vulkan)  ·  llama-q8 (SYCL)  │   one container per quant, GPU offload
+   │ llama-q4   (SYCL)    ·  agent (puller)   │   no inbound port needed
+   └──────────────────────────────────────────┘
 ```
 
 Minimum hardware:
 - **1× $5 VPS** with a public IP and a domain pointing at it (Hetzner CX22 / DigitalOcean $4 / Vultr / etc.). Runs the master FastAPI; needs no GPU.
-- **1× worker host** with an Intel Arc / NVIDIA / AMD GPU (≥4 GB VRAM is plenty). Internet access for outbound HTTPS only — Cloudflare Tunnel, NAT, or a normal home connection all work.
+- **1× worker host** with an Intel Arc / NVIDIA / AMD GPU (≥4 GB VRAM is plenty; reference deploy is on Intel Arc Pro B50 / 16 GB). Internet access for outbound HTTPS only — Cloudflare Tunnel, NAT, or a normal home connection all work.
 
 Each component is one `docker compose up` and a handful of env vars. **Full guide:** [`api/HOSTING.md`](api/HOSTING.md).
 
@@ -221,7 +221,7 @@ cp .env.example .env   # set MASTER_BASE_URL, WORKER_TOKEN, LLAMA_INTERNAL_KEY
 docker compose up -d   # GGUFs auto-download on first boot
 ```
 
-The worker has a `models-init` step that pulls the GGUFs from Hugging Face on first boot (override `MODELS_DOWNLOAD_BASE_URL`), or you can point `MODELS_HOST_PATH` at a directory you've populated yourself.
+The worker has a `models-init` step that pulls the GGUFs from Hugging Face on first boot (override `MODELS_DOWNLOAD_BASE_URL`), or you can pre-populate the bind-mount path (`/home/lukashimsel/himalaya-models/` by default; edit `worker/docker-compose.yml` for other hosts).
 
 ---
 
