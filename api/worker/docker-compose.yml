@@ -100,8 +100,10 @@ services:
       - "8080"
       - "--models-preset"
       - "/models/himalaya.ini"
+      # 4 = the three named presets (himalaya-bf16/q8/q4) + the implicit
+      # "default" preset created from the [*] global-defaults section.
       - "--models-max"
-      - "3"
+      - "4"
     expose:
       - "8080"
     healthcheck:
