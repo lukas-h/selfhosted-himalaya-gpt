@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 import httpx
@@ -15,8 +16,12 @@ async def amain() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     log = logging.getLogger("worker")
-    log.info("worker starting: id=%s slugs=%s concurrency=%d master=%s",
-             settings.worker_id, settings.slugs, settings.max_concurrent, settings.master_base_url)
+    slug_urls = {slug: settings.llama_url_for(slug) for slug in settings.slugs}
+    log.info(
+        "worker starting: id=%s slugs=%s concurrency=%d master=%s upstreams=%s",
+        settings.worker_id, settings.slugs, settings.max_concurrent,
+        settings.master_base_url, slug_urls,
+    )
 
     sem = asyncio.Semaphore(settings.max_concurrent)
     master_headers = {"Authorization": f"Bearer {settings.worker_token}"}
@@ -26,23 +31,30 @@ async def amain() -> None:
         else {}
     )
 
-    async with httpx.AsyncClient(
-        base_url=settings.master_base_url,
-        headers=master_headers,
-        timeout=httpx.Timeout(connect=15, read=None, write=None, pool=None),
-        http2=False,  # keep HTTP/1.1 for chunked upload friendliness through proxies
-    ) as master, httpx.AsyncClient(
-        base_url=settings.llama_base_url,
-        headers=llama_headers,
-        timeout=httpx.Timeout(connect=15, read=None, write=None, pool=None),
-    ) as llama:
+    async with contextlib.AsyncExitStack() as stack:
+        master = await stack.enter_async_context(httpx.AsyncClient(
+            base_url=settings.master_base_url,
+            headers=master_headers,
+            timeout=httpx.Timeout(connect=15, read=None, write=None, pool=None),
+            http2=False,  # keep HTTP/1.1 for chunked upload friendliness through proxies
+        ))
+        # one llama client per slug — each points at the per-quant container
+        # so requests for `himalaya-q4` go to `http://llama-q4:8080` etc.
+        llama_clients: dict[str, httpx.AsyncClient] = {}
+        for slug, url in slug_urls.items():
+            llama_clients[slug] = await stack.enter_async_context(httpx.AsyncClient(
+                base_url=url,
+                headers=llama_headers,
+                timeout=httpx.Timeout(connect=15, read=None, write=None, pool=None),
+            ))
+
         # one puller per slug = fairness across models, no slug starves another
         await asyncio.gather(*[
             puller(
                 slug=slug,
                 sem=sem,
                 master=master,
-                llama=llama,
+                llama=llama_clients[slug],
                 worker_id=settings.worker_id,
                 poll_timeout_s=settings.poll_timeout_s,
             )

@@ -5,15 +5,13 @@ services:
   # The host path below (/home/lukashimsel/himalaya-models) is hardcoded
   # because Coolify's compose parser does NOT do ${VAR} interpolation in
   # `volumes:` lines (it treats anything that doesn't start with /. or / as
-  # a Docker named volume). Edit the two volume lines if you deploy to a
-  # different host.
+  # a Docker named volume). Edit the volume lines if you deploy elsewhere.
   #
   # Behavior at startup:
   #   - If the bind-mount dir already has the .gguf files (e.g. you rsync'd
   #     them there), init exits 0 immediately.
   #   - If files are missing, init installs curl and downloads from
-  #     MODELS_DOWNLOAD_BASE_URL. Override that env to point at your own
-  #     mirror / HF repo.
+  #     MODELS_DOWNLOAD_BASE_URL.
   models-init:
     image: alpine:3.20
     container_name: himalaya-models-init
@@ -58,32 +56,50 @@ services:
         done
         echo "[models-init] all models present"
 
-  llama:
-    # Builds llama-server from the lukas-h/llama.cpp fork (submodule at
-    # ../../llama.cpp). CPU-only build — chosen over SYCL/Vulkan because
-    # router mode with N≥2 children of a GPU-enabled binary causes silent
-    # zombie crashes on prompts >~50 tokens (every child dlopens the GPU
-    # backend at startup, contend over /dev/dri at compute-graph alloc).
-    # cpu.Dockerfile has no GPU backend baked in → no contention. Without
-    # the fork the model would be rejected as `Model NanochatForCausalLM
-    # is not supported`. To enable GPU offload later, you'd need to either
-    # (a) drop router mode (one container per quant) or (b) wait for an
-    # upstream fix to backend-init isolation across child processes.
+  # ---------------------------------------------------------------
+  # Per-quant llama-server containers.
+  #
+  # Architecture: one container per quant. Two images get built:
+  #   - himalaya-llama:cpu (cpu.Dockerfile)  → BF16
+  #   - himalaya-llama:sycl (intel.Dockerfile) → Q8_0, Q4_K_M
+  #
+  # Why mixed:
+  #   * BF16 weights aren't fully supported by the SYCL backend — the
+  #     model loader splits ~70% of weights to CPU and the resulting
+  #     mixed CPU/GPU layout segfaults sched_reserve. CPU is the only
+  #     stable home for BF16 right now.
+  #   * Q8_0 and Q4_K_M load fully onto the GPU and run at ~1100-1300
+  #     tok/s prompt eval and ~350-450 tok/s decode on Arc Pro B50.
+  #
+  # Why we abandoned the previous router-mode setup:
+  #   The fork's `--models-preset` mode spawns one child per model in
+  #   the same container. With a GPU-backed binary, each child dlopens
+  #   libggml-sycl.so and reserves a SYCL queue on /dev/dri. Two or
+  #   more children silently zombie on prompts >~50 tokens because of
+  #   the resulting device contention. Per-quant containers each get
+  #   their own process tree → no contention.
+  #
+  # Why --batch-size 8 / --ubatch-size 8 on SYCL:
+  #   The fork's flash-attn SYCL kernel hangs and kills the process at
+  #   batch.n_tokens > ~10 on this nanochat compute graph. The K^T·Q
+  #   strided non-contiguous matmul also crashes when flash-attn is
+  #   off, so flash-attn is required. Microbatching keeps every
+  #   physical batch under the crash threshold; longer prompts just
+  #   loop the kernel more times. Throughput is still GPU-bound.
+  # ---------------------------------------------------------------
+
+  llama-bf16:
     build:
       context: ../../llama.cpp
       dockerfile: .devops/cpu.Dockerfile
       target: server
     image: himalaya-llama:cpu
-    container_name: himalaya-llama
+    container_name: himalaya-llama-bf16
     restart: unless-stopped
     depends_on:
       models-init:
         condition: service_completed_successfully
     volumes:
-      # GGUFs and the preset INI both live in the same bind-mounted dir on
-      # the host. Coolify's file_storage rewrite turned `./presets` into an
-      # empty managed dir, so we can't use the repo's presets path through
-      # the deploy artifact — keep everything in /home/.../himalaya-models.
       - /home/lukashimsel/himalaya-models:/models:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
@@ -92,12 +108,22 @@ services:
       - "0.0.0.0"
       - "--port"
       - "8080"
-      - "--models-preset"
-      - "/models/himalaya.ini"
-      # 4 = the three named presets (himalaya-bf16/q8/q4) + the implicit
-      # "default" preset created from the [*] global-defaults section.
-      - "--models-max"
-      - "4"
+      - "--model"
+      - "/models/himalayagpt-0.5b-it-bf16.gguf"
+      - "--alias"
+      - "himalaya-bf16"
+      - "--ctx-size"
+      - "2048"
+      - "--cont-batching"
+      - "--flash-attn"
+      - "off"
+      - "--n-gpu-layers"
+      - "0"
+      - "--parallel"
+      - "1"
+      - "--cache-ram"
+      - "0"
+      - "--no-warmup"
     expose:
       - "8080"
     healthcheck:
@@ -105,7 +131,122 @@ services:
       interval: 15s
       timeout: 5s
       retries: 12
-      start_period: 60s
+      start_period: 90s
+
+  llama-q8:
+    build:
+      context: ../../llama.cpp
+      dockerfile: .devops/intel.Dockerfile
+      target: server
+    image: himalaya-llama:sycl
+    container_name: himalaya-llama-q8
+    restart: unless-stopped
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
+    devices:
+      - /dev/dri:/dev/dri
+    # Numeric GIDs because Docker's `group_add` resolves names against the
+    # helper/build container's /etc/group, not the host's. iph4: video=44,
+    # render=992. Override via VIDEO_GID / RENDER_GID if your host differs.
+    group_add:
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
+    volumes:
+      - /home/lukashimsel/himalaya-models:/models:ro
+    environment:
+      LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+      ONEAPI_DEVICE_SELECTOR: level_zero:0
+      SYCL_CACHE_PERSISTENT: "1"
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--model"
+      - "/models/himalayagpt-0.5b-it-Q8_0.gguf"
+      - "--alias"
+      - "himalaya-q8"
+      - "--ctx-size"
+      - "2048"
+      - "--cont-batching"
+      - "--flash-attn"
+      - "on"
+      - "--batch-size"
+      - "8"
+      - "--ubatch-size"
+      - "8"
+      - "--n-gpu-layers"
+      - "999"
+      - "--parallel"
+      - "1"
+      - "--cache-ram"
+      - "0"
+      - "--no-warmup"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 16
+      start_period: 90s
+
+  llama-q4:
+    build:
+      context: ../../llama.cpp
+      dockerfile: .devops/intel.Dockerfile
+      target: server
+    image: himalaya-llama:sycl
+    container_name: himalaya-llama-q4
+    restart: unless-stopped
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
+    volumes:
+      - /home/lukashimsel/himalaya-models:/models:ro
+    environment:
+      LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+      ONEAPI_DEVICE_SELECTOR: level_zero:0
+      SYCL_CACHE_PERSISTENT: "1"
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--model"
+      - "/models/himalayagpt-0.5b-it-Q4_K_M.gguf"
+      - "--alias"
+      - "himalaya-q4"
+      - "--ctx-size"
+      - "2048"
+      - "--cont-batching"
+      - "--flash-attn"
+      - "on"
+      - "--batch-size"
+      - "8"
+      - "--ubatch-size"
+      - "8"
+      - "--n-gpu-layers"
+      - "999"
+      - "--parallel"
+      - "1"
+      - "--cache-ram"
+      - "0"
+      - "--no-warmup"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 16
+      start_period: 90s
 
   agent:
     build: ./agent
@@ -113,12 +254,18 @@ services:
     container_name: himalaya-agent
     restart: unless-stopped
     depends_on:
-      llama:
+      llama-bf16:
+        condition: service_healthy
+      llama-q8:
+        condition: service_healthy
+      llama-q4:
         condition: service_healthy
     environment:
       MASTER_BASE_URL: ${MASTER_BASE_URL:?set MASTER_BASE_URL}
       WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN}
-      LLAMA_BASE_URL: http://llama:8080
+      # Per-quant routing. Each slug `himalaya-<quant>` resolves to
+      # `http://llama-<quant>:8080` against the compose service names.
+      LLAMA_URL_TEMPLATE: http://llama-{quant}:8080
       LLAMA_INTERNAL_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
       MODEL_SLUGS: ${MODEL_SLUGS:-himalaya-bf16,himalaya-q8,himalaya-q4}
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
