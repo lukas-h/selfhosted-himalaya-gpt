@@ -1,0 +1,23 @@
+services:
+  master:
+    build: .
+    image: himalaya-master:latest
+    container_name: himalaya-master
+    restart: unless-stopped
+    ports:
+      - "${MASTER_PORT:-8000}:8000"
+    environment:
+      API_TOKENS: ${API_TOKENS:?set API_TOKENS}
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN}
+      MODEL_SLUGS: ${MODEL_SLUGS:-himalaya-bf16,himalaya-q8,himalaya-q4}
+      MAX_CONCURRENT_PER_WORKER: ${MAX_CONCURRENT_PER_WORKER:-2}
+      MAX_QUEUE_DEPTH: ${MAX_QUEUE_DEPTH:-32}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-60}
+      USER_REQUEST_TIMEOUT_S: ${USER_REQUEST_TIMEOUT_S:-300}
+      WORKER_POLL_TIMEOUT_S: ${WORKER_POLL_TIMEOUT_S:-55}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health'); sys.exit(0)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

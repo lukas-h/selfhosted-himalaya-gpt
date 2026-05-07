@@ -1,0 +1,60 @@
+services:
+  llama:
+    # Builds llama-server from the fork at ../llama.cpp using the fork's own
+    # SYCL build path. Switch to a prebuilt image (image: ...) once stable.
+    build:
+      context: ../llama.cpp
+      dockerfile: .devops/intel.Dockerfile
+      target: server
+      args:
+        GGML_SYCL_F16: "OFF"
+    image: himalaya-llama:sycl
+    container_name: himalaya-llama
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "video"
+      - "render"
+    volumes:
+      - ./models:/models:ro
+      - ./presets:/presets:ro
+    environment:
+      LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+      ONEAPI_DEVICE_SELECTOR: level_zero:0
+      SYCL_CACHE_PERSISTENT: "1"
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--models-preset"
+      - "/presets/himalaya.ini"
+      - "--models-max"
+      - "3"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  agent:
+    build: ./agent
+    image: himalaya-agent:latest
+    container_name: himalaya-agent
+    restart: unless-stopped
+    depends_on:
+      llama:
+        condition: service_healthy
+    environment:
+      MASTER_BASE_URL: ${MASTER_BASE_URL:?set MASTER_BASE_URL}
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN}
+      LLAMA_BASE_URL: http://llama:8080
+      LLAMA_INTERNAL_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+      MODEL_SLUGS: ${MODEL_SLUGS:-himalaya-bf16,himalaya-q8,himalaya-q4}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
+      POLL_TIMEOUT_S: ${POLL_TIMEOUT_S:-55}
+      WORKER_ID: ${WORKER_ID:-arc-pro-b50-01}

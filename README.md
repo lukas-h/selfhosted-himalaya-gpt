@@ -11,10 +11,14 @@ himalayagpt-0.5b-it-bf16.gguf      1.0 GB   recommended
 himalayagpt-0.5b-it-Q8_0.gguf      533 MB   smaller, near-identical quality
 himalayagpt-0.5b-it-Q4_K_M.gguf    300 MB   smallest, math accuracy notably worse
 llama.cpp/                         submodule → lukas-h/llama.cpp
+master/  (api branch only)         OpenAI-compatible front-door FastAPI service
+worker/  (api branch only)         GPU-side llama-server + Python agent
 NANOCHAT_GGUF_HANDOVER.md          design notes, parity verification, internals
 ```
 
 GGUF files are tracked via Git LFS.
+
+The `master/` and `worker/` directories live on the **`api` branch** (`git checkout api`). They wrap the GGUFs in a tiny self-hostable OpenAI-compatible API. See [`master/README.md`](master/README.md) and [`worker/README.md`](worker/README.md).
 
 ---
 

@@ -1,3 +1,12 @@
 .claude
 .codex
 .venv/
+/.venv/
+master/.venv/
+worker/agent/.venv/
+master/.env
+worker/.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
