@@ -14,7 +14,16 @@ class Settings(BaseSettings):
 
     max_concurrent_per_worker: int = 2
     max_queue_depth: int = 32
-    rate_limit_rpm: int = 60
+    # Sustained rate cap per token. 1200/min (20 req/s) is enough headroom
+    # for typical agentic workloads (multiple models + retries + tool loops)
+    # against a single trusted token. Lower it if you expose API_TOKENS to
+    # untrusted clients.
+    rate_limit_rpm: int = 1200
+    # Optional burst cap per token, in requests-per-second. The bucket
+    # resets every second so brief spikes are absorbed but a stuck client
+    # still backs off. Set to 0 to disable the per-second cap and only
+    # enforce rate_limit_rpm.
+    rate_limit_burst_rps: int = 30
     user_request_timeout_s: int = 300
     worker_poll_timeout_s: int = 55
 
