@@ -16,6 +16,10 @@ services:
     container_name: himalaya-models-init
     restart: "no"
     environment:
+      # Reference MODELS_HOST_PATH here so Coolify includes it in the .env it
+      # generates for docker compose interpolation. Without this reference
+      # Coolify omits it and the volume below falls back to its default.
+      MODELS_HOST_PATH: ${MODELS_HOST_PATH:-}
       MODELS_DOWNLOAD_BASE_URL: ${MODELS_DOWNLOAD_BASE_URL:-https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main}
       MODELS_FILES: "himalayagpt-0.5b-it-bf16.gguf himalayagpt-0.5b-it-Q8_0.gguf himalayagpt-0.5b-it-Q4_K_M.gguf"
     volumes:
@@ -83,6 +87,8 @@ services:
       - ${MODELS_HOST_PATH:-himalaya-models-data}:/models:ro
       - ./presets:/presets:ro
     environment:
+      # See models-init for why MODELS_HOST_PATH is referenced here.
+      MODELS_HOST_PATH: ${MODELS_HOST_PATH:-}
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
       ONEAPI_DEVICE_SELECTOR: level_zero:0
       SYCL_CACHE_PERSISTENT: "1"
