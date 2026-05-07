@@ -19,7 +19,7 @@ services:
       MAX_QUEUE_DEPTH: ${MAX_QUEUE_DEPTH:-32}
       RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-1200}
       RATE_LIMIT_BURST_RPS: ${RATE_LIMIT_BURST_RPS:-30}
-      USER_REQUEST_TIMEOUT_S: ${USER_REQUEST_TIMEOUT_S:-300}
+      USER_REQUEST_TIMEOUT_S: ${USER_REQUEST_TIMEOUT_S:-30}
       WORKER_POLL_TIMEOUT_S: ${WORKER_POLL_TIMEOUT_S:-55}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health'); sys.exit(0)"]

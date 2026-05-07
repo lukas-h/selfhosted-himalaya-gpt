@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     # still backs off. Set to 0 to disable the per-second cap and only
     # enforce rate_limit_rpm.
     rate_limit_burst_rps: int = 30
-    user_request_timeout_s: int = 300
+    # Master gives up on a queued job after this many seconds and frees the
+    # slot. Keep this close to typical client timeouts (curl/httpx default
+    # 30s) — longer values let abandoned-curl phantom jobs accumulate and
+    # saturate the per-slug queue.
+    user_request_timeout_s: int = 30
     worker_poll_timeout_s: int = 55
 
     @property
