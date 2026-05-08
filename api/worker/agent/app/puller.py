@@ -1,4 +1,4 @@
-"""Long-polling puller. One coroutine per slug, sharing a global concurrency semaphore."""
+"""Long-polling puller. One coroutine per slug, sharing a global active-job semaphore."""
 from __future__ import annotations
 
 import asyncio
@@ -22,39 +22,29 @@ async def puller(
 ) -> None:
     backoff = 1.0
     while True:
-        await sem.acquire()  # hold a slot before polling, release on job completion
-        slot_handed_off = False
         try:
-            try:
-                resp = await master.get(
-                    "/internal/jobs/poll",
-                    params={"model": slug, "worker_id": worker_id, "timeout": poll_timeout_s},
-                    timeout=poll_timeout_s + 15,
-                )
-            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-                log.warning("[%s] poll error: %r (sleep %.1fs)", slug, exc, backoff)
-                await asyncio.sleep(backoff + random.random())
-                backoff = min(backoff * 2, 30.0)
-                continue
+            resp = await master.get(
+                "/internal/jobs/poll",
+                params={"model": slug, "worker_id": worker_id, "timeout": poll_timeout_s},
+                timeout=poll_timeout_s + 15,
+            )
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            log.warning("[%s] poll error: %r (sleep %.1fs)", slug, exc, backoff)
+            await asyncio.sleep(backoff + random.random())
+            backoff = min(backoff * 2, 30.0)
+            continue
 
-            backoff = 1.0
-            if resp.status_code == 204:
-                continue
-            if resp.status_code >= 400:
-                log.warning("[%s] poll http %s: %s", slug, resp.status_code, resp.text[:200])
-                await asyncio.sleep(2.0)
-                continue
+        backoff = 1.0
+        if resp.status_code == 204:
+            continue
+        if resp.status_code >= 400:
+            log.warning("[%s] poll http %s: %s", slug, resp.status_code, resp.text[:200])
+            await asyncio.sleep(2.0)
+            continue
 
-            job = resp.json()
-
-            async def _wrap():
-                try:
-                    await run_job(job, master, llama)
-                finally:
-                    sem.release()
-
-            asyncio.create_task(_wrap())
-            slot_handed_off = True
+        job = resp.json()
+        await sem.acquire()
+        try:
+            await run_job(job, master, llama)
         finally:
-            if not slot_handed_off:
-                sem.release()
+            sem.release()

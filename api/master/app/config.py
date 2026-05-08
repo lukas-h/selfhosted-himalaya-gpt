@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     model_slugs: str = Field(default="himalaya-bf16,himalaya-q8,himalaya-q4")
 
-    max_concurrent_per_worker: int = 2
+    max_concurrent_per_worker: int = 3
     max_queue_depth: int = 32
     # Sustained rate cap per token. 1200/min (20 req/s) is enough headroom
     # for typical agentic workloads (multiple models + retries + tool loops)

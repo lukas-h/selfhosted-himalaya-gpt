@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,7 @@ class FakeRequest:
 
 
 def _new_job() -> Job:
-    return Job(id="job_test", model="himalaya-q8", request={})
+    return Job(id="job_test", model="himalaya-q8", request={}, deadline_at=time.time() + 60)
 
 
 @pytest.mark.asyncio

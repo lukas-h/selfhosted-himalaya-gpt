@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import AsyncIterator
 
 import httpx
@@ -15,6 +16,14 @@ log = logging.getLogger(__name__)
 
 async def _envelopes(job: dict, llama: httpx.AsyncClient) -> AsyncIterator[bytes]:
     """Async generator yielding NDJSON-framed envelope lines (with trailing \\n)."""
+    deadline_at = job.get("deadline_at")
+    if isinstance(deadline_at, (int, float)) and time.time() >= deadline_at:
+        yield orjson.dumps({
+            "type": "error",
+            "data": {"message": "job expired before worker execution", "type": "timeout_error"},
+        }) + b"\n"
+        return
+
     body = dict(job["request"])
     body["model"] = job["model"]
     body["stream"] = True

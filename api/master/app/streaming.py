@@ -59,8 +59,17 @@ async def sse_for(job: Job, request: Request) -> AsyncIterator[bytes]:
         if await request.is_disconnected():
             job.user_disconnected = True
             return
+        remaining = job.deadline_at - time.time()
+        if remaining <= 0:
+            err = {"message": "upstream timeout", "type": "timeout_error"}
+            yield b"data: " + orjson.dumps({"error": err}) + b"\n\n"
+            yield b"data: [DONE]\n\n"
+            return
         try:
-            envelope = await asyncio.wait_for(job.out_queue.get(), timeout=KEEPALIVE_INTERVAL_S)
+            envelope = await asyncio.wait_for(
+                job.out_queue.get(),
+                timeout=min(KEEPALIVE_INTERVAL_S, remaining),
+            )
         except asyncio.TimeoutError:
             yield b": keepalive\n\n"
             continue

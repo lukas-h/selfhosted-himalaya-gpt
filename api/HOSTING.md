@@ -115,7 +115,7 @@ Other knobs you can leave at default unless you hit them:
 | Var                         | Default                                       | Notes                                                                 |
 |-----------------------------|-----------------------------------------------|-----------------------------------------------------------------------|
 | `MODEL_SLUGS`               | `himalaya-bf16,himalaya-q8,himalaya-q4`       | One per llama-{quant} container — slug `himalaya-q8` → `llama-q8:8080`.|
-| `MAX_CONCURRENT_PER_WORKER` | `2`                                           | Cap on in-flight jobs per worker. Keep ≤ llama-server's `parallel`.   |
+| `MAX_CONCURRENT_PER_WORKER` | `3`                                           | Cap on in-flight jobs per worker. Match worker-side `MAX_CONCURRENT`. |
 | `MAX_QUEUE_DEPTH`           | `32`                                          | Per-slug queue size before requests get rejected with 503.            |
 | `RATE_LIMIT_RPM`            | `1200`                                        | Sustained per-key (sha256-hashed bearer) requests/minute.             |
 | `RATE_LIMIT_BURST_RPS`      | `30`                                          | Per-second burst cap on top of RPM. Set to 0 to disable.              |
@@ -179,7 +179,7 @@ Optional:
 | Var                       | Default                                                                          | Notes                                                              |
 |---------------------------|----------------------------------------------------------------------------------|--------------------------------------------------------------------|
 | `WORKER_ID`               | container hostname                                                              | Lets you run multiple workers and tell them apart in master logs.  |
-| `MAX_CONCURRENT`          | `2`                                                                              | Cap shared across all per-quant pullers in this worker.            |
+| `MAX_CONCURRENT`          | `3`                                                                              | Active-job cap shared across all per-quant pullers in this worker. |
 | `LLAMA_URL_TEMPLATE`      | `http://llama-{quant}:8080`                                                      | Slug→URL pattern. `{quant}` = slug with `himalaya-` stripped. Override only if you renamed the per-quant services.|
 | `MODELS_DOWNLOAD_BASE_URL`| `https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main`           | Where `models-init` downloads from on first boot.                  |
 | `RENDER_GID` / `VIDEO_GID`| `992` / `44`                                                                     | Match `getent group render video` on your host. Defaults are stock Ubuntu 24.04. |
@@ -199,7 +199,7 @@ You'll see in order:
 
 1. `models-init` runs once, either confirms the bind-mount has the GGUFs or downloads them (first boot only).
 2. `llama-bf16` (Vulkan), `llama-q8`, `llama-q4` (SYCL) build, start, and each loads its model — healthchecks flip to healthy after ~60 s on cold start.
-3. `agent` waits for all three llama services to be healthy, then connects to `MASTER_BASE_URL` and starts long-polling — one puller per slug.
+3. `agent` waits for all three llama services to be healthy, then connects to `MASTER_BASE_URL` and starts long-polling — one puller per slug. Idle long-polls do not consume active-job capacity.
 
 ---
 
@@ -281,7 +281,7 @@ There's no built-in load balancer — the master just hands a job to whichever w
 
 **`/readyz` keeps returning 503 "no recent worker poll"** — the worker hasn't connected yet (still building, hit a build error, or the `WORKER_TOKEN` doesn't match). Check `docker compose logs agent` on the worker side.
 
-**Requests time out at 30 seconds with 504** — master's accepting requests but no worker is polling for that slug. The 30 s deadline is `USER_REQUEST_TIMEOUT_S` (matched to typical client timeouts to keep the queue clean under abandoned bursts).
+**Requests time out at 30 seconds with 504** — master's accepting requests but no worker is polling for that slug, or every worker is saturated. The 30 s deadline is `USER_REQUEST_TIMEOUT_S` (matched to typical client timeouts to keep the queue clean under abandoned bursts).
 
 **`HTTP 503 "queue full, try again"`** — the per-slug `MAX_QUEUE_DEPTH=32` is saturated. Either real load is too high (raise the cap) or you fired a burst whose clients abandoned but jobs are still draining. With the default 30 s timeout phantoms expire fast.
 

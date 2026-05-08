@@ -49,6 +49,15 @@ async def _watch_disconnect(request: Request, job: Job, stop: asyncio.Event) -> 
             pass
 
 
+async def _stop_watcher(watcher: asyncio.Task, stop: asyncio.Event) -> None:
+    stop.set()
+    watcher.cancel()
+    try:
+        await watcher
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 @router.post("/chat/completions")
 @limiter.limit(f"{settings.rate_limit_burst_rps}/second;{settings.rate_limit_rpm}/minute"
                if settings.rate_limit_burst_rps > 0
@@ -64,10 +73,13 @@ async def chat_completions(
     if body.model not in cfg.slugs:
         raise HTTPException(status_code=400, detail=f"unknown model '{body.model}'")
 
+    now = time.time()
     job = Job(
         id=new_job_id(),
         model=body.model,
         request=body.model_dump(exclude_none=True),
+        created_at=now,
+        deadline_at=now + cfg.user_request_timeout_s,
     )
     registry.register(job)
 
@@ -79,11 +91,11 @@ async def chat_completions(
     watcher = asyncio.create_task(_watch_disconnect(request, job, stop))
 
     try:
+        registry.prune_queue(body.model)
         await asyncio.wait_for(registry.queues[body.model].put(job), timeout=5.0)
     except (asyncio.TimeoutError, asyncio.QueueFull):
-        stop.set()
-        watcher.cancel()
-        registry.pop(job.id)
+        await _stop_watcher(watcher, stop)
+        registry.finalize(job.id, "queue_rejected")
         raise HTTPException(status_code=503, detail="queue full, try again")
 
     if body.stream:
@@ -94,9 +106,8 @@ async def chat_completions(
                 async for chunk in sse_for(job, request):
                     yield chunk
             finally:
-                stop.set()
-                watcher.cancel()
-                registry.pop(job.id)
+                await _stop_watcher(watcher, stop)
+                registry.finalize(job.id, "client_stream_closed")
 
         return StreamingResponse(
             _stream(),
@@ -110,17 +121,21 @@ async def chat_completions(
 
     try:
         chunks: list[dict] = []
-        deadline = time.time() + cfg.user_request_timeout_s
         while True:
-            timeout = max(1.0, deadline - time.time())
+            timeout = job.deadline_at - time.time()
+            if timeout <= 0:
+                registry.finalize(job.id, "user_timeout")
+                raise HTTPException(status_code=504, detail="upstream timeout")
             try:
                 envelope = await asyncio.wait_for(job.out_queue.get(), timeout=timeout)
             except asyncio.TimeoutError:
+                registry.finalize(job.id, "user_timeout")
                 raise HTTPException(status_code=504, detail="upstream timeout")
             if job.user_disconnected:
                 # Client gave up while waiting; bail without raising so we
                 # don't pollute logs. Job stays flagged for the puller to
                 # skip if it hasn't been picked up yet.
+                registry.finalize(job.id, "client_disconnected")
                 return JSONResponse(status_code=499, content={"error": {
                     "message": "client disconnected", "type": "client_closed",
                 }})
@@ -134,10 +149,5 @@ async def chat_completions(
                 return JSONResponse(status_code=502, content={"error": err})
         return JSONResponse(content=aggregate_chat_completion(job, chunks, body.model))
     finally:
-        stop.set()
-        watcher.cancel()
-        try:
-            await watcher
-        except (asyncio.CancelledError, Exception):
-            pass
-        registry.pop(job.id)
+        await _stop_watcher(watcher, stop)
+        registry.finalize(job.id, "client_response_closed")

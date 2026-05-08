@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     llama_internal_key: str = Field(default="")
 
     model_slugs: str = Field(default="himalaya-bf16,himalaya-q8,himalaya-q4")
-    max_concurrent: int = 2
+    max_concurrent: int = 3
     poll_timeout_s: int = 55
     worker_id: str = Field(default_factory=lambda: socket.gethostname())
 

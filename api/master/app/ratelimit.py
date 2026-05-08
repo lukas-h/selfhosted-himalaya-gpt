@@ -17,13 +17,7 @@ def _key_func(request: Request) -> str:
     return request.client.host if request.client else "anon"
 
 
-_default_limits = [f"{settings.rate_limit_rpm}/minute"]
-if settings.rate_limit_burst_rps > 0:
-    # slowapi enforces every limit in the list; the tightest applicable
-    # one wins per request. Keep the per-second cap first by convention.
-    _default_limits.insert(0, f"{settings.rate_limit_burst_rps}/second")
-
-limiter = Limiter(key_func=_key_func, default_limits=_default_limits)
+limiter = Limiter(key_func=_key_func, default_limits=[])
 
 
 def rate_limit_envelope(exc: RateLimitExceeded):

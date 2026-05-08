@@ -40,7 +40,7 @@ If the SYCL build fails on `oneapi`/`igc` packages, see `llama.cpp/docs/backend/
 docker compose up
 ```
 
-`models-init` runs first, then the three llama services start in parallel, then the agent waits for all three healthchecks to flip and begins long-polling. Cold-start is ~60 s for q8/q4 (SYCL kernel JIT) and a few seconds for bf16.
+`models-init` runs first, then the three llama services start in parallel, then the agent waits for all three healthchecks to flip and begins long-polling. The pullers do not consume the global active-job semaphore while idle; capacity is held only while a llama request is running. Cold-start is ~60 s for q8/q4 (SYCL kernel JIT) and a few seconds for bf16.
 
 ## Verify the GPU
 
@@ -69,5 +69,5 @@ To hit it from the host, add `ports: ["127.0.0.1:9002:8080"]` to whichever `llam
 - **KV cache must stay F32**. Don't set `cache-type-k = f16` or `cache-type-v = f16`. The squared-ReLU MLP overflows F16 — see `../../NANOCHAT_GGUF_HANDOVER.md`.
 - **SYCL bf16 is broken**. The bf16 model loader splits ~70 % of weights to CPU and segfaults `sched_reserve`. Use `vulkan.Dockerfile` for bf16 (already the default).
 - **SYCL q8/q4 needs `--ubatch-size 8`**. The fork's flash-attn SYCL kernel hangs at `batch.n_tokens > ~10` on this compute graph; the strided K^T·Q matmul also crashes when flash-attn is off. Microbatching keeps every physical batch under the threshold without losing GPU-bound throughput.
-- **`MAX_CONCURRENT`** is shared across all per-quant pullers — bump it if you want more in-flight headroom, but each llama-server runs `--parallel 1`.
+- **`MAX_CONCURRENT`** defaults to `3`, one active job for each per-quant llama service. Keep it aligned with the master's `MAX_CONCURRENT_PER_WORKER`.
 - **Single worker per master**. Running the same compose on a second box would work but the master doesn't load-balance across workers.

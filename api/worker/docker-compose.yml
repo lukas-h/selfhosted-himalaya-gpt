@@ -309,7 +309,9 @@ services:
       # `http://llama-<quant>:8080` against the compose service names.
       LLAMA_URL_TEMPLATE: http://llama-{quant}:8080
       LLAMA_INTERNAL_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
-      MODEL_SLUGS: ${MODEL_SLUGS:-himalaya-bf16,himalaya-q8,himalaya-q4}
-      MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
-      POLL_TIMEOUT_S: ${POLL_TIMEOUT_S:-55}
+      # Runtime defaults are pinned here because Coolify keeps dashboard env
+      # rows around and may otherwise inject stale values into compose apps.
+      MODEL_SLUGS: himalaya-bf16,himalaya-q8,himalaya-q4
+      MAX_CONCURRENT: "3"
+      POLL_TIMEOUT_S: "55"
       WORKER_ID: ${WORKER_ID:-arc-pro-b50-01}
