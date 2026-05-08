@@ -197,8 +197,8 @@ The `api` branch (`git checkout api`) ships a small two-piece stack you can depl
             │ workers long-poll  (outbound only)
    ┌──────────────────────────────────────────┐
    │ worker (GPU host)                        │   your home machine / lab / wherever
-   │ llama-bf16 (Vulkan)  ·  llama-q8 (SYCL)  │   one container per quant, GPU offload
-   │ llama-q4   (SYCL)    ·  agent (puller)   │   no inbound port needed
+   │ llama-bf16 (Vulkan)  ·  llama-q8 (Vulkan) │   one container per quant, GPU offload
+   │ llama-q4   (Vulkan)  ·  agent (puller)    │   no inbound port needed
    └──────────────────────────────────────────┘
 ```
 

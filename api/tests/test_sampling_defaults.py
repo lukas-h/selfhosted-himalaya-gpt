@@ -25,6 +25,8 @@ REQUIRED = {
 }
 
 LLAMA_SERVICES = ["llama-bf16", "llama-q8", "llama-q4"]
+SYCL_ONLY_ENV = {"ONEAPI_DEVICE_SELECTOR", "SYCL_CACHE_PERSISTENT"}
+SYCL_ONLY_FLAGS = {"--batch-size", "--ubatch-size"}
 
 
 @pytest.fixture(scope="module")
@@ -49,3 +51,18 @@ def test_llama_service_has_sampling_defaults(compose: dict, svc: str) -> None:
             f"{svc} has `{flag} {pairs[flag]}` but expected `{flag} {expected}`. "
             f"See NANOCHAT_GGUF_HANDOVER.md for the rationale."
         )
+
+
+@pytest.mark.parametrize("svc", LLAMA_SERVICES)
+def test_llama_service_uses_vulkan_backend(compose: dict, svc: str) -> None:
+    """All deployed quants use Vulkan; SYCL is faster for some q8/q4 cases
+    but has been unstable on this nanochat graph."""
+    service = compose["services"][svc]
+    assert service["build"]["dockerfile"] == ".devops/vulkan.Dockerfile"
+    assert service["image"] == "himalaya-llama:vulkan"
+
+    env = service.get("environment") or {}
+    assert not (SYCL_ONLY_ENV & set(env)), f"{svc} still has SYCL-only env vars"
+
+    cmd = set(service["command"])
+    assert not (SYCL_ONLY_FLAGS & cmd), f"{svc} still has SYCL-only microbatch flags"

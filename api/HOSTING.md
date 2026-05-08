@@ -40,7 +40,7 @@ directly against the GGUFs.
    │             │ depends_on: completed               │
    │   ┌──────────────┐ ┌────────────┐ ┌────────────┐  │
    │   │ llama-bf16   │ │ llama-q8   │ │ llama-q4   │  │
-   │   │ Vulkan +     │ │ SYCL +     │ │ SYCL +     │  │
+   │   │ Vulkan +     │ │ Vulkan +   │ │ Vulkan +   │  │
    │   │ -ngl 999     │ │ -ngl 999   │ │ -ngl 999   │  │
    │   └──────────────┘ └────────────┘ └────────────┘  │
    │             │ healthcheck (each)                  │
@@ -58,7 +58,7 @@ Why split this way?
 - **Master is internet-facing** so you can give clients a stable URL with TLS, an API token, and rate limiting. It's stateless and tiny — anywhere with a public IP works.
 - **Worker is outbound-only**. Your home GPU never accepts inbound connections — the agent makes outbound long-poll requests to the master. Works behind any NAT / Cloudflare Tunnel / mobile tether.
 - **One container per quant**, not the fork's `--models-preset` router. With a GPU-backed binary the router mode silently zombies child processes ≥2 because each child dlopens the GPU backend and contends over `/dev/dri`. Per-quant containers each get their own process tree, no contention.
-- **Mixed backends**: Vulkan for BF16 (the SYCL backend segfaults on bf16 weights — ~70 % fall back to CPU and the mixed layout breaks `sched_reserve`), SYCL for Q8/Q4 (its decode is ~3× Vulkan's on those quants — see `.local-secrets/perf-matrix.md`).
+- **All-Vulkan backend**: BF16, Q8, and Q4 all use `vulkan.Dockerfile`. SYCL is faster for Q8/Q4 decode in microbenchmarks, but it has repeatedly hit graph/backend stability problems on this model; Vulkan is the simpler stable default.
 
 ---
 
@@ -77,7 +77,7 @@ Why split this way?
 
 - **A box with a GPU** that has ≥ 4 GB VRAM. Tested on Intel Arc Pro B50 (16 GB); Intel Battlemage, NVIDIA, and AMD GPUs are all supported by the underlying llama.cpp build (you may need to swap the Dockerfile target — see "Other GPUs" below).
 - **No public IP required.** The worker only does outbound HTTPS to your master.
-- **~15 GB free disk** for the docker images (Intel oneAPI base alone is ~3 GB; the SYCL build image lands at ~12.7 GB; the Vulkan image is ~715 MB) and ~2 GB for the GGUFs.
+- **~5 GB free disk** for the Vulkan docker image and ~2 GB for the GGUFs. More is useful for Docker build cache.
 - **Reliable internet** is enough — the worker doesn't care about latency to clients, only to your master.
 
 ### Both together
@@ -193,12 +193,12 @@ docker compose up -d
 docker compose logs -f         # watch llama build + load the models
 ```
 
-The first deploy compiles `llama-server` twice: once with the SYCL backend inside the Intel oneAPI Docker image (~20-25 min, pulls a ~3 GB base layer) and once with the Vulkan backend (~5-10 min). After that the layers are cached and rebuilds are seconds.
+The first deploy compiles `llama-server` once with the Vulkan backend (~5-10 min). After that the layers are cached and rebuilds are seconds.
 
 You'll see in order:
 
 1. `models-init` runs once, either confirms the bind-mount has the GGUFs or downloads them (first boot only).
-2. `llama-bf16` (Vulkan), `llama-q8`, `llama-q4` (SYCL) build, start, and each loads its model — healthchecks flip to healthy after ~60 s on cold start.
+2. `llama-bf16`, `llama-q8`, and `llama-q4` build from the Vulkan image, start, and each loads its model — healthchecks flip to healthy after cold start.
 3. `agent` waits for all three llama services to be healthy, then connects to `MASTER_BASE_URL` and starts long-polling — one puller per slug. Idle long-polls do not consume active-job capacity.
 
 ---
@@ -255,17 +255,17 @@ Streaming (`stream=True`) works the same.
 
 ## Other GPUs
 
-The default worker compose builds two images: `intel.Dockerfile` for Q8/Q4 (SYCL backend → Intel Arc) and `vulkan.Dockerfile` for BF16. To use other hardware, swap the `build.dockerfile` for each `llama-*` service in `api/worker/docker-compose.yml`:
+The default worker compose builds one image: `vulkan.Dockerfile` for BF16, Q8, and Q4. To use other hardware, swap the `build.dockerfile` for each `llama-*` service in `api/worker/docker-compose.yml`:
 
 | GPU vendor   | Dockerfile to use            | What changes                                                                                             |
 |--------------|------------------------------|----------------------------------------------------------------------------------------------------------|
-| Intel SYCL   | `.devops/intel.Dockerfile`   | default for q8/q4. Requires `--batch-size 8 --ubatch-size 8` (already set) on the nanochat compute graph.|
-| Intel Vulkan | `.devops/vulkan.Dockerfile`  | default for bf16. Mesa ANV, no special flags. Works on AMD/NVIDIA via Mesa too.                          |
-| NVIDIA CUDA  | `.devops/cuda.Dockerfile`    | drop `ONEAPI_DEVICE_SELECTOR`, swap `--gpus all` in for `/dev/dri`. Untested with this fork.             |
+| Intel Vulkan | `.devops/vulkan.Dockerfile`  | default for all three services. Mesa ANV, no special flags. Works on AMD/NVIDIA via Mesa too.            |
+| Intel SYCL   | `.devops/intel.Dockerfile`   | faster q8/q4 decode in microbenchmarks, but unstable on this nanochat graph; requires SYCL-specific workarounds.|
+| NVIDIA CUDA  | `.devops/cuda.Dockerfile`    | swap `--gpus all` in for `/dev/dri`. Untested with this fork.                                           |
 | AMD ROCm    | `.devops/rocm.Dockerfile`    | similar to CUDA, with ROCm runtime. Untested with this fork.                                             |
 | CPU only    | `.devops/cpu.Dockerfile`     | remove the `devices:` and `group_add:` blocks; expect ~80 t/s decode on bf16.                            |
 
-The `lukas-h/llama.cpp` fork's nanochat patches are in the runtime/converter layer, so they apply identically across all backends. SYCL specifically still needs the `ggml_cont` workaround (already in the fork at commit `1be52d2`).
+The `lukas-h/llama.cpp` fork's nanochat patches are in the runtime/converter layer, so they apply identically across all backends. The default deploy avoids the SYCL-specific gotchas by using Vulkan for every quant.
 
 ---
 

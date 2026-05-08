@@ -137,7 +137,7 @@ These came up while wiring the GGUFs into a Coolify-deployed FastAPI service —
    - **Flash-attn SYCL kernel hangs at `batch.n_tokens > ~10`** and silently kills the worker. Workaround: `--batch-size 8 --ubatch-size 8`. Long prompts just loop the kernel more times; throughput is still GPU-bound.
    - **BF16 weights segfault `sched_reserve`.** SYCL splits ~70% of bf16 tensors back to CPU (no SYCL kernel for several bf16 ops on this graph) and the resulting mixed CPU/GPU layout segfaults during compute-graph reservation. Use Vulkan for BF16 instead.
 
-4. **Vulkan backend (`.devops/vulkan.Dockerfile`)** has none of the SYCL bugs and handles BF16 cleanly (~224 tok/s decode, 1736 tok/s prompt eval on Arc Pro B50). Decode on Q8/Q4 is ~3× slower than SYCL though, so the production deploy is mixed: Vulkan for BF16, SYCL for Q8/Q4.
+4. **Vulkan backend (`.devops/vulkan.Dockerfile`)** has none of the SYCL bugs and handles BF16 cleanly (~224 tok/s decode, 1736 tok/s prompt eval on Arc Pro B50). Decode on Q8/Q4 is ~3× slower than SYCL in microbenchmarks, but the production deploy now favors stability and uses Vulkan for BF16, Q8, and Q4.
 
 5. **Don't ship F16 GGUF.** Already noted above — the squared-ReLU MLP overflows F16 dynamic range and produces NaN logits. BF16 has the same on-disk size with F32 exponent range. K-quants and Q8_0 also work because their dequant path lands in F32.
 

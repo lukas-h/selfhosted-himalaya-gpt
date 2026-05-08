@@ -59,40 +59,26 @@ services:
   # ---------------------------------------------------------------
   # Per-quant llama-server containers.
   #
-  # Architecture: one container per quant. Two images get built:
-  #   - himalaya-llama:vulkan (vulkan.Dockerfile)  → BF16
-  #   - himalaya-llama:sycl   (intel.Dockerfile)   → Q8_0, Q4_K_M
+  # Architecture: one container per quant, all using the Vulkan image.
   #
-  # Why mixed (per-quant best for agentic workloads):
-  #   * BF16 weights aren't supported by the SYCL backend — ~70% of
-  #     weights fall back to CPU and the mixed layout segfaults
-  #     sched_reserve. Vulkan handles bf16 cleanly: ~224 t/s decode,
-  #     1736 t/s prompt eval on Arc Pro B50.
-  #   * Q8_0 and Q4_K_M go through SYCL because its decode is ~3x
-  #     Vulkan's on those quants (~400-450 t/s vs ~120-220 t/s).
-  #     For agent loops generating ~256 tokens per step, that
-  #     compounds to ~2x faster end-to-end wallclock.
-  #   * CPU isn't on the GPU host's hot path anymore but the cpu image
-  #     is still useful as a fallback during incidents (build it
-  #     manually with `.devops/cpu.Dockerfile`).
+  # Why all-Vulkan:
+  #   * BF16 weights aren't supported reliably by the SYCL backend — ~70%
+  #     of weights fall back to CPU and the mixed layout segfaults
+  #     sched_reserve.
+  #   * Q8_0 and Q4_K_M decode faster on SYCL in microbenchmarks, but the
+  #     SYCL backend has repeated stability problems on this nanochat graph.
+  #     Vulkan avoids the SYCL flash-attn, strided matmul, and oneAPI
+  #     container issues with one smaller image.
+  #   * CPU isn't on the GPU host's hot path anymore but the cpu image is
+  #     still useful as a fallback during incidents (build it manually with
+  #     `.devops/cpu.Dockerfile`).
   #
   # Why we abandoned the previous router-mode setup:
-  #   The fork's `--models-preset` mode spawns one child per model in
-  #   the same container. With a GPU-backed binary, each child dlopens
-  #   libggml-sycl.so and reserves a SYCL queue on /dev/dri. Two or
-  #   more children silently zombie on prompts >~50 tokens because of
-  #   the resulting device contention. Per-quant containers each get
-  #   their own process tree → no contention.
-  #
-  # Why --batch-size 8 / --ubatch-size 8 on SYCL (q8/q4 only):
-  #   The fork's flash-attn SYCL kernel hangs and kills the process at
-  #   batch.n_tokens > ~10 on this nanochat compute graph. The K^T·Q
-  #   strided non-contiguous matmul also crashes when flash-attn is
-  #   off, so flash-attn is required. Microbatching keeps every
-  #   physical batch under the crash threshold; longer prompts just
-  #   loop the kernel more times. Throughput is still GPU-bound.
-  #   Vulkan doesn't have these bugs, so the bf16 service uses default
-  #   batch sizes.
+  #   The fork's `--models-preset` mode spawns one child per model in the
+  #   same container. With a GPU-backed binary, each child initializes its
+  #   own GPU backend context and can contend over /dev/dri. Per-quant
+  #   containers each get their own process tree, so the agent can route
+  #   without sharing one router process.
   # ---------------------------------------------------------------
 
   llama-bf16:
@@ -158,9 +144,9 @@ services:
   llama-q8:
     build:
       context: ../../llama.cpp
-      dockerfile: .devops/intel.Dockerfile
+      dockerfile: .devops/vulkan.Dockerfile
       target: server
-    image: himalaya-llama:sycl
+    image: himalaya-llama:vulkan
     container_name: himalaya-llama-q8
     restart: unless-stopped
     depends_on:
@@ -178,8 +164,6 @@ services:
       - /home/lukashimsel/himalaya-models:/models:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
-      ONEAPI_DEVICE_SELECTOR: level_zero:0
-      SYCL_CACHE_PERSISTENT: "1"
     command:
       - "--host"
       - "0.0.0.0"
@@ -194,10 +178,6 @@ services:
       - "--cont-batching"
       - "--flash-attn"
       - "on"
-      - "--batch-size"
-      - "8"
-      - "--ubatch-size"
-      - "8"
       - "--n-gpu-layers"
       - "999"
       - "--parallel"
@@ -227,9 +207,9 @@ services:
   llama-q4:
     build:
       context: ../../llama.cpp
-      dockerfile: .devops/intel.Dockerfile
+      dockerfile: .devops/vulkan.Dockerfile
       target: server
-    image: himalaya-llama:sycl
+    image: himalaya-llama:vulkan
     container_name: himalaya-llama-q4
     restart: unless-stopped
     depends_on:
@@ -244,8 +224,6 @@ services:
       - /home/lukashimsel/himalaya-models:/models:ro
     environment:
       LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
-      ONEAPI_DEVICE_SELECTOR: level_zero:0
-      SYCL_CACHE_PERSISTENT: "1"
     command:
       - "--host"
       - "0.0.0.0"
@@ -260,10 +238,6 @@ services:
       - "--cont-batching"
       - "--flash-attn"
       - "on"
-      - "--batch-size"
-      - "8"
-      - "--ubatch-size"
-      - "8"
       - "--n-gpu-layers"
       - "999"
       - "--parallel"
