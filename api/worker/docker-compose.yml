@@ -1,0 +1,291 @@
+services:
+  # One-shot init container: ensures the three GGUFs are present before
+  # llama-server starts.
+  #
+  # The host path below (/home/lukashimsel/himalaya-models) is hardcoded
+  # because Coolify's compose parser does NOT do ${VAR} interpolation in
+  # `volumes:` lines (it treats anything that doesn't start with /. or / as
+  # a Docker named volume). Edit the volume lines if you deploy elsewhere.
+  #
+  # Behavior at startup:
+  #   - If the bind-mount dir already has the .gguf files (e.g. you rsync'd
+  #     them there), init exits 0 immediately.
+  #   - If files are missing, init installs curl and downloads from
+  #     MODELS_DOWNLOAD_BASE_URL.
+  models-init:
+    image: alpine:3.20
+    container_name: himalaya-models-init
+    restart: "no"
+    environment:
+      MODELS_DOWNLOAD_BASE_URL: ${MODELS_DOWNLOAD_BASE_URL:-https://huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf/resolve/main}
+      MODELS_FILES: "himalayagpt-0.5b-it-bf16.gguf himalayagpt-0.5b-it-Q8_0.gguf himalayagpt-0.5b-it-Q4_K_M.gguf"
+    volumes:
+      - /home/lukashimsel/himalaya-models:/models
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        echo "[models-init] /models listing (host bind mount visibility):"
+        ls -la /models || true
+        echo "[models-init] MODELS_FILES=$$MODELS_FILES"
+        echo "[models-init] MODELS_DOWNLOAD_BASE_URL=$$MODELS_DOWNLOAD_BASE_URL"
+        cd /models
+        any_missing=0
+        for f in $$MODELS_FILES; do
+          if [ -f "$$f" ] && [ -s "$$f" ]; then
+            echo "[models-init] $$f present ($$(stat -c %s "$$f") bytes), skip"
+            continue
+          fi
+          any_missing=1
+        done
+        if [ "$$any_missing" = "0" ]; then
+          echo "[models-init] all 3 GGUFs present, nothing to download"
+          exit 0
+        fi
+        echo "[models-init] one or more GGUFs missing, installing curl + downloading"
+        apk add --no-cache curl >/dev/null
+        for f in $$MODELS_FILES; do
+          if [ -f "$$f" ] && [ -s "$$f" ]; then
+            continue
+          fi
+          url="$$MODELS_DOWNLOAD_BASE_URL/$$f"
+          echo "[models-init] downloading $$url"
+          curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 -o "$$f.partial" "$$url"
+          mv "$$f.partial" "$$f"
+        done
+        echo "[models-init] all models present"
+
+  # ---------------------------------------------------------------
+  # Per-quant llama-server containers.
+  #
+  # Architecture: one container per quant, all using the Vulkan image.
+  #
+  # Why all-Vulkan:
+  #   * BF16 weights aren't supported reliably by the SYCL backend — ~70%
+  #     of weights fall back to CPU and the mixed layout segfaults
+  #     sched_reserve.
+  #   * Q8_0 and Q4_K_M decode faster on SYCL in microbenchmarks, but the
+  #     SYCL backend has repeated stability problems on this nanochat graph.
+  #     Vulkan avoids the SYCL flash-attn, strided matmul, and oneAPI
+  #     container issues with one smaller image.
+  #   * CPU isn't on the GPU host's hot path anymore but the cpu image is
+  #     still useful as a fallback during incidents (build it manually with
+  #     `.devops/cpu.Dockerfile`).
+  #
+  # Why we abandoned the previous router-mode setup:
+  #   The fork's `--models-preset` mode spawns one child per model in the
+  #   same container. With a GPU-backed binary, each child initializes its
+  #   own GPU backend context and can contend over /dev/dri. Per-quant
+  #   containers each get their own process tree, so the agent can route
+  #   without sharing one router process.
+  # ---------------------------------------------------------------
+
+  llama-bf16:
+    build:
+      context: ../../llama.cpp
+      dockerfile: .devops/vulkan.Dockerfile
+      target: server
+    image: himalaya-llama:vulkan
+    container_name: himalaya-llama-bf16
+    restart: unless-stopped
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
+    volumes:
+      - /home/lukashimsel/himalaya-models:/models:ro
+    environment:
+      LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--model"
+      - "/models/himalayagpt-0.5b-it-bf16.gguf"
+      - "--alias"
+      - "himalaya-bf16"
+      - "--ctx-size"
+      - "2048"
+      - "--cont-batching"
+      - "--flash-attn"
+      - "on"
+      - "--n-gpu-layers"
+      - "999"
+      - "--parallel"
+      - "1"
+      - "--cache-ram"
+      - "0"
+      - "--no-warmup"
+      # Default sampling. The fork's nanochat 0.5B loops with llama-server's
+      # built-in defaults (repeat_penalty=1.0 disables it) — these match the
+      # values from the upstream Himalaya AI Colab and from
+      # NANOCHAT_GGUF_HANDOVER.md. Per-request fields override.
+      - "--temp"
+      - "0.2"
+      - "--top-k"
+      - "40"
+      - "--repeat-penalty"
+      - "1.08"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  llama-q8:
+    build:
+      context: ../../llama.cpp
+      dockerfile: .devops/vulkan.Dockerfile
+      target: server
+    image: himalaya-llama:vulkan
+    container_name: himalaya-llama-q8
+    restart: unless-stopped
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
+    devices:
+      - /dev/dri:/dev/dri
+    # Numeric GIDs because Docker's `group_add` resolves names against the
+    # helper/build container's /etc/group, not the host's. iph4: video=44,
+    # render=992. Override via VIDEO_GID / RENDER_GID if your host differs.
+    group_add:
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
+    volumes:
+      - /home/lukashimsel/himalaya-models:/models:ro
+    environment:
+      LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--model"
+      - "/models/himalayagpt-0.5b-it-Q8_0.gguf"
+      - "--alias"
+      - "himalaya-q8"
+      - "--ctx-size"
+      - "2048"
+      - "--cont-batching"
+      - "--flash-attn"
+      - "on"
+      - "--n-gpu-layers"
+      - "999"
+      - "--parallel"
+      - "1"
+      - "--cache-ram"
+      - "0"
+      - "--no-warmup"
+      # Default sampling. The fork's nanochat 0.5B loops with llama-server's
+      # built-in defaults (repeat_penalty=1.0 disables it) — these match the
+      # values from the upstream Himalaya AI Colab and from
+      # NANOCHAT_GGUF_HANDOVER.md. Per-request fields override.
+      - "--temp"
+      - "0.2"
+      - "--top-k"
+      - "40"
+      - "--repeat-penalty"
+      - "1.08"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 16
+      start_period: 90s
+
+  llama-q4:
+    build:
+      context: ../../llama.cpp
+      dockerfile: .devops/vulkan.Dockerfile
+      target: server
+    image: himalaya-llama:vulkan
+    container_name: himalaya-llama-q4
+    restart: unless-stopped
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:-992}"
+      - "${VIDEO_GID:-44}"
+    volumes:
+      - /home/lukashimsel/himalaya-models:/models:ro
+    environment:
+      LLAMA_API_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--model"
+      - "/models/himalayagpt-0.5b-it-Q4_K_M.gguf"
+      - "--alias"
+      - "himalaya-q4"
+      - "--ctx-size"
+      - "2048"
+      - "--cont-batching"
+      - "--flash-attn"
+      - "on"
+      - "--n-gpu-layers"
+      - "999"
+      - "--parallel"
+      - "1"
+      - "--cache-ram"
+      - "0"
+      - "--no-warmup"
+      # Default sampling. The fork's nanochat 0.5B loops with llama-server's
+      # built-in defaults (repeat_penalty=1.0 disables it) — these match the
+      # values from the upstream Himalaya AI Colab and from
+      # NANOCHAT_GGUF_HANDOVER.md. Per-request fields override.
+      - "--temp"
+      - "0.2"
+      - "--top-k"
+      - "40"
+      - "--repeat-penalty"
+      - "1.08"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 16
+      start_period: 90s
+
+  agent:
+    build: ./agent
+    image: himalaya-agent:latest
+    container_name: himalaya-agent
+    restart: unless-stopped
+    depends_on:
+      llama-bf16:
+        condition: service_healthy
+      llama-q8:
+        condition: service_healthy
+      llama-q4:
+        condition: service_healthy
+    environment:
+      MASTER_BASE_URL: ${MASTER_BASE_URL:?set MASTER_BASE_URL}
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN}
+      # Per-quant routing. Each slug `himalaya-<quant>` resolves to
+      # `http://llama-<quant>:8080` against the compose service names.
+      LLAMA_URL_TEMPLATE: http://llama-{quant}:8080
+      LLAMA_INTERNAL_KEY: ${LLAMA_INTERNAL_KEY:?set LLAMA_INTERNAL_KEY}
+      # Runtime defaults are pinned here because Coolify keeps dashboard env
+      # rows around and may otherwise inject stale values into compose apps.
+      MODEL_SLUGS: himalaya-bf16,himalaya-q8,himalaya-q4
+      MAX_CONCURRENT: "3"
+      POLL_TIMEOUT_S: "55"
+      WORKER_ID: ${WORKER_ID:-arc-pro-b50-01}

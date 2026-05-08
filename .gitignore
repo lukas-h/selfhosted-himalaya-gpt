@@ -1,3 +1,17 @@
 .claude
 .codex
 .venv/
+/.venv/
+api/master/.venv/
+api/worker/agent/.venv/
+api/master/.env
+api/worker/.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.local-secrets/
+
+# GGUFs live on main; on api they're rsync'd to the worker host so
+# the deploy clone doesn't have to fight git-lfs every time.
+/himalayagpt-0.5b-it-*.gguf

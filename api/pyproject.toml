@@ -1,0 +1,6 @@
+# This file only exists to host the pytest configuration shared by api/tests/.
+# The actual app projects live in api/master/ and api/worker/agent/ each with
+# their own pyproject.toml.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

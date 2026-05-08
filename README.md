@@ -1,4 +1,4 @@
-# selfhosted-himalaya-api
+# selfhosted-himalaya-gpt
 
 Run [`himalaya-ai/himalayagpt-0.5b-it`](https://huggingface.co/himalaya-ai/himalayagpt-0.5b-it) — the open-weight model from the [**Himalaya AI**](https://himalayaai.org/) team (Karpathy nanochat-architecture, ~0.5B params, instruction-tuned, English + Nepali/Hindi) — locally as a GGUF model in any llama.cpp-compatible runtime: `llama-cli`, LM Studio, Ollama, etc.
 
@@ -11,18 +11,21 @@ himalayagpt-0.5b-it-bf16.gguf      1.0 GB   recommended
 himalayagpt-0.5b-it-Q8_0.gguf      533 MB   smaller, near-identical quality
 himalayagpt-0.5b-it-Q4_K_M.gguf    300 MB   smallest, math accuracy notably worse
 llama.cpp/                         submodule → lukas-h/llama.cpp
+api/  (api branch only)            self-hosted OpenAI-compatible API (master + worker)
 NANOCHAT_GGUF_HANDOVER.md          design notes, parity verification, internals
 ```
 
 GGUF files are tracked via Git LFS.
+
+The `api/` directory lives on the **`api` branch** (`git checkout api`). It contains the master FastAPI service, the GPU-side worker, and a small SSE mock for plumbing tests. See [`api/master/README.md`](api/master/README.md) and [`api/worker/README.md`](api/worker/README.md).
 
 ---
 
 ## 1. Clone the repo
 
 ```bash
-git clone --recurse-submodules git@github.com:lukas-h/selfhosted-himalaya-api.git
-cd selfhosted-himalaya-api
+git clone --recurse-submodules git@github.com:lukas-h/selfhosted-himalaya-gpt.git
+cd selfhosted-himalaya-gpt
 ```
 
 If you forgot `--recurse-submodules`:
@@ -175,6 +178,50 @@ Replace `Q8_0` with `Q4_K_M` for the smaller variant. Same overrides apply.
 ## Notes on output quality
 
 It's a 0.5B model — coherent but makes factual mistakes. Output matches the upstream Hugging Face reference numerically (see `NANOCHAT_GGUF_HANDOVER.md`). Recommended sampling: `temperature=0.2, top_k=40, repetition_penalty=1.08`.
+
+---
+
+## Self-hosting it as an OpenAI-compatible API
+
+The `api` branch (`git checkout api`) ships a small two-piece stack you can deploy yourself, so client SDKs (`openai`, `litellm`, etc.) can talk to your home GPU over plain HTTPS without exposing the GPU to the internet.
+
+```
+       OpenAI SDK
+            │ HTTPS
+            ▼
+   ┌────────────────────┐
+   │ master (FastAPI)   │   tiny ($5 VPS, anywhere with a public IP)
+   │ /v1/chat/completions │ token auth · multi-window rate limit · in-memory queue
+   └────────────────────┘
+            ▲
+            │ workers long-poll  (outbound only)
+   ┌──────────────────────────────────────────┐
+   │ worker (GPU host)                        │   your home machine / lab / wherever
+   │ llama-bf16 (Vulkan)  ·  llama-q8 (Vulkan) │   one container per quant, GPU offload
+   │ llama-q4   (Vulkan)  ·  agent (puller)    │   no inbound port needed
+   └──────────────────────────────────────────┘
+```
+
+Minimum hardware:
+- **1× $5 VPS** with a public IP and a domain pointing at it (Hetzner CX22 / DigitalOcean $4 / Vultr / etc.). Runs the master FastAPI; needs no GPU.
+- **1× worker host** with an Intel Arc / NVIDIA / AMD GPU (≥4 GB VRAM is plenty; reference deploy is on Intel Arc Pro B50 / 16 GB). Internet access for outbound HTTPS only — Cloudflare Tunnel, NAT, or a normal home connection all work.
+
+Each component is one `docker compose up` and a handful of env vars. **Full guide:** [`api/HOSTING.md`](api/HOSTING.md).
+
+```bash
+# master (on the VPS)
+git clone -b api https://github.com/lukas-h/selfhosted-himalaya-gpt.git
+cd selfhosted-himalaya-gpt/api/master
+cp .env.example .env   # set API_TOKENS and WORKER_TOKEN
+docker compose up -d
+
+# worker (on the GPU host)
+cd selfhosted-himalaya-gpt/api/worker
+cp .env.example .env   # set MASTER_BASE_URL, WORKER_TOKEN, LLAMA_INTERNAL_KEY
+docker compose up -d   # GGUFs auto-download on first boot
+```
+
+The worker has a `models-init` step that pulls the GGUFs from Hugging Face on first boot (override `MODELS_DOWNLOAD_BASE_URL`), or you can pre-populate the bind-mount path (`/home/lukashimsel/himalaya-models/` by default; edit `worker/docker-compose.yml` for other hosts).
 
 ---
 
