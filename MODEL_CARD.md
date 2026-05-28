@@ -44,6 +44,8 @@ LM Studio, Ollama, Open WebUI, and other UIs that bundle vanilla llama.cpp will 
 
 The chat template (`<|user_start|>…<|user_end|><|assistant_start|>…<|assistant_end|>`) and EOT token are embedded in the GGUF metadata.
 
+OpenAI-style `system` messages are supported and merge into the next user turn (separated by a blank line). Tool/`developer` roles render as user content. The embedded template also strips the 9 nanochat control-token literal strings from message content to prevent prompt injection — if you want a literal `<|assistant_start|>` in user input, that will not survive into the rendered prompt by design.
+
 ## How to use
 
 Build the fork, then run `llama-cli`:

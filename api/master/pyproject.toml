@@ -18,4 +18,11 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pyyaml>=6.0.3",
+    # For api/tests/test_chat_template.py: renders the GGUF-embedded jinja
+    # template to verify system-merging + special-token stripping, and
+    # parses the GGUF directly to read the embedded template (gguf-py pulls
+    # numpy in lazily). All three are dev-only — the runtime master app
+    # never touches them.
+    "jinja2>=3.1",
+    "numpy>=2.0",
 ]
