@@ -11,3 +11,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .local-secrets/
+
+# Separate working clone of huggingface.co/lukas-h/himalayagpt-0.5b-it-gguf,
+# used to push GGUFs to HF Hub for worker rollout. Has its own .git.
+/himalayagpt-0.5b-it-gguf/
