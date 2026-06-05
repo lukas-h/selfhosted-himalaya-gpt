@@ -133,7 +133,9 @@ async def test_e2e_streaming_tool_call(app):
     assert tool_chunks, f"no tool_calls delta in stream: {payloads}"
     choice = tool_chunks[-1]["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
-    assert choice["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
+    tc = choice["delta"]["tool_calls"][0]
+    assert tc["function"]["name"] == "get_weather"
+    assert tc["index"] == 0  # required by the OpenAI streaming schema
 
 
 async def test_e2e_no_tools_is_plain_chat(app):

@@ -25,4 +25,8 @@ dev = [
     # never touches them.
     "jinja2>=3.1",
     "numpy>=2.0",
+    # Used by tests/test_openai_schema.py to validate the master's constructed
+    # responses against the REAL OpenAI pydantic models (catches spec drift like
+    # the missing streaming tool_call `index`). Dev-only; runtime never imports it.
+    "openai>=1.40",
 ]

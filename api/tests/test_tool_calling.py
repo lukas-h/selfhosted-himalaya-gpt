@@ -320,7 +320,9 @@ def test_tool_stream_chunks_emit_tool_calls_delta():
     assert len(chunks) == 1
     choice = chunks[0]["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
-    assert choice["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
+    tc = choice["delta"]["tool_calls"][0]
+    assert tc["function"]["name"] == "get_weather"
+    assert tc["index"] == 0  # OpenAI streaming requires index on each tool_call delta
     assert chunks[0]["object"] == "chat.completion.chunk"
 
 
