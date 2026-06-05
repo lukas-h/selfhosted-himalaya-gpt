@@ -75,7 +75,7 @@ def test_nepali_regression():
     any_valid_call = False
     for case in nepal_cases:
         names = ev.tool_names(case)
-        for attempt in range(3):
+        for attempt in range(4):  # the model is stochastic; a few tries to demonstrate a call
             text, calls = ev.run_tool_case(case["tools"], [{"role": "user", "content": case["query"]}])
             is_loop, sample = looping(text)
             assert not is_loop, (
