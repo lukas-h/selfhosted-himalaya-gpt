@@ -19,6 +19,7 @@ import orjson
 from fastapi import Request
 
 from .queue import Job
+from .tool_calling import parse_tool_calls, to_openai_tool_calls
 
 KEEPALIVE_INTERVAL_S = 15.0
 
@@ -54,7 +55,16 @@ async def parse_ndjson(request: Request, on_envelope) -> None:
 
 
 async def sse_for(job: Job, request: Request) -> AsyncIterator[bytes]:
-    """SSE generator for the user-facing /v1/chat/completions stream."""
+    """SSE generator for the user-facing /v1/chat/completions stream.
+
+    Normal requests pass deltas straight through. Tool requests (job.tool_mode)
+    buffer the model output and emit a single `tool_calls` delta at the end — a
+    `<tool_call>` span can't be recognized until it's fully received, so token
+    streaming is traded for correct tool parsing on tool turns only.
+    """
+    buffering = job.tool_mode
+    buf: list[str] = []
+    finish_reason: str | None = None
     while True:
         if await request.is_disconnected():
             job.user_disconnected = True
@@ -76,8 +86,18 @@ async def sse_for(job: Job, request: Request) -> AsyncIterator[bytes]:
 
         kind = envelope.get("type")
         if kind == "chunk":
-            yield b"data: " + orjson.dumps(envelope.get("data", {})) + b"\n\n"
+            data = envelope.get("data", {})
+            if buffering:
+                _accumulate(buf, data)
+                fr = _chunk_finish_reason(data)
+                if fr:
+                    finish_reason = fr
+                continue
+            yield b"data: " + orjson.dumps(data) + b"\n\n"
         elif kind == "done":
+            if buffering:
+                for chunk in _tool_stream_chunks(job, "".join(buf), finish_reason):
+                    yield b"data: " + orjson.dumps(chunk) + b"\n\n"
             yield b"data: [DONE]\n\n"
             return
         elif kind == "error":
@@ -105,6 +125,7 @@ def aggregate_chat_completion(job: Job, chunks: list[dict], model: str) -> dict:
             finish_reason = choices[0]["finish_reason"]
 
     full_text = "".join(content_parts)
+    message, finish_reason = _assistant_message(job, full_text, finish_reason)
     return {
         "id": "chatcmpl-" + job.id.split("_", 1)[-1],
         "object": "chat.completion",
@@ -113,9 +134,58 @@ def aggregate_chat_completion(job: Job, chunks: list[dict], model: str) -> dict:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": full_text},
-                "finish_reason": finish_reason or "stop",
+                "message": message,
+                "finish_reason": finish_reason,
             }
         ],
         "usage": None,
     }
+
+
+def _assistant_message(job: Job, full_text: str, finish_reason: str | None) -> tuple[dict, str]:
+    """Shape the assistant message. In tool_mode, parse <tool_call> spans into an
+    OpenAI tool_calls array (finish_reason → "tool_calls"); otherwise plain text."""
+    if job.tool_mode:
+        clean, calls = parse_tool_calls(full_text)
+        if calls:
+            return (
+                {"role": "assistant", "content": clean or None,
+                 "tool_calls": to_openai_tool_calls(calls)},
+                "tool_calls",
+            )
+    return {"role": "assistant", "content": full_text}, (finish_reason or "stop")
+
+
+def _accumulate(buf: list[str], data: dict) -> None:
+    choices = data.get("choices") or []
+    if choices:
+        delta = choices[0].get("delta") or {}
+        if isinstance(delta.get("content"), str):
+            buf.append(delta["content"])
+
+
+def _chunk_finish_reason(data: dict) -> str | None:
+    choices = data.get("choices") or []
+    if choices and choices[0].get("finish_reason"):
+        return choices[0]["finish_reason"]
+    return None
+
+
+def _tool_stream_chunks(job: Job, full_text: str, finish_reason: str | None) -> list[dict]:
+    """Final streaming chunk(s) for a buffered tool turn: one tool_calls delta if
+    a call was parsed, else the buffered text as a single content delta."""
+    clean, calls = parse_tool_calls(full_text)
+    base = {
+        "id": "chatcmpl-" + job.id.split("_", 1)[-1],
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": job.model,
+    }
+    if calls:
+        delta: dict = {"role": "assistant", "tool_calls": to_openai_tool_calls(calls)}
+        if clean:
+            delta["content"] = clean
+        return [{**base, "choices": [{"index": 0, "delta": delta, "finish_reason": "tool_calls"}]}]
+    return [{**base, "choices": [
+        {"index": 0, "delta": {"role": "assistant", "content": full_text},
+         "finish_reason": finish_reason or "stop"}]}]

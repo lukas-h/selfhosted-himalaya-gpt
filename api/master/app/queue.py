@@ -29,6 +29,9 @@ class Job:
     finalized: bool = False
     finalized_at: float | None = None
     final_reason: str | None = None
+    # True when the request asked for tools: master injected the Hermes prompt
+    # and must parse <tool_call> spans out of the model output (see streaming.py).
+    tool_mode: bool = False
 
 
 class Registry:

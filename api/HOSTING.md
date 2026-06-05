@@ -301,7 +301,14 @@ There's no built-in load balancer — the master just hands a job to whichever w
 
 - **Production-grade**. The master keeps the queue in-memory; if it restarts, in-flight requests get a 5xx. Acceptable for tiny home use; swap to Redis/SQLite once the load justifies it.
 - **A hosted product**. There's no billing, usage tracking, per-user quotas, or admin UI.
-- **Tool/function calling capable**. The 0.5B model emits tool tokens (`<|python_*|>`, `<|output_*|>`) but nothing reliable enough to depend on.
+- **A *reliable* function-calling model**. Function/tool calling *is* wired up: the
+  master renders OpenAI `tools` into a Hermes prompt (with few-shot priming) and
+  parses `<tool_call>` JSON back into OpenAI `tool_calls`
+  (`api/master/app/tool_calling.py`). It no longer loops on tool prompts and emits
+  well-formed calls — but it's a 0.5B model, so tool *selection* and argument
+  accuracy are modest (~40–60% on the bundled eval); treat it as best-effort. See
+  `api/tests/test_tool_calling.py` (unit), and `test_tool_calling_eval.py` +
+  `tests/bfcl/` (live, env-gated) for what to expect.
 - **Multimodal**. Text in, text out.
 
 For everything that *is* solid, see the [`README.md`](../README.md) and [`NANOCHAT_GGUF_HANDOVER.md`](../NANOCHAT_GGUF_HANDOVER.md) at the repo root.

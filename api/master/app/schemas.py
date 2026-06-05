@@ -9,6 +9,11 @@ class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str | list[dict[str, Any]] | None = None
     name: str | None = None
+    # Tool calling: assistant turns may carry tool_calls; tool turns carry the
+    # id of the call they answer. Kept as loose dicts — we re-render them into
+    # Hermes text for the nanochat template (see app.tool_calling).
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -27,6 +32,13 @@ class ChatCompletionRequest(BaseModel):
     stop: list[str] | str | None = None
     seed: int | None = None
     user: str | None = None
+    # Function/tool calling (OpenAI + legacy shapes). Declared explicitly so
+    # model_dump carries them; app.tool_calling consumes and strips them before
+    # the request reaches the worker/llama-server.
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    functions: list[dict[str, Any]] | None = None
+    function_call: str | dict[str, Any] | None = None
 
 
 class ModelObject(BaseModel):
