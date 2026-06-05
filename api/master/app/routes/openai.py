@@ -12,6 +12,7 @@ from ..queue import Job, new_job_id
 from ..ratelimit import limiter
 from ..schemas import ChatCompletionRequest, ModelObject, ModelsList
 from ..streaming import aggregate_chat_completion, sse_for
+from ..tool_calling import apply_tool_formatting
 
 router = APIRouter(prefix="/v1")
 
@@ -74,12 +75,19 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail=f"unknown model '{body.model}'")
 
     now = time.time()
+    # Rewrite tools into a Hermes prompt + few-shot and strip the tool fields
+    # before the request reaches the worker. tool_mode drives output parsing.
+    # NB: keep this a distinct name — do NOT shadow the `request: Request` param,
+    # which _watch_disconnect / sse_for rely on further down.
+    job_request = body.model_dump(exclude_none=True)
+    tool_mode = apply_tool_formatting(job_request)
     job = Job(
         id=new_job_id(),
         model=body.model,
-        request=body.model_dump(exclude_none=True),
+        request=job_request,
         created_at=now,
         deadline_at=now + cfg.user_request_timeout_s,
+        tool_mode=tool_mode,
     )
     registry.register(job)
 

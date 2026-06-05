@@ -1,0 +1,118 @@
+[
+  {
+    "id": "weather_simple",
+    "category": "simple",
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}}}
+    ],
+    "query": "What's the weather in Paris right now?",
+    "expect": {"function": "get_weather", "args_contains": {"city": "Paris"}}
+  },
+  {
+    "id": "stock_simple",
+    "category": "simple",
+    "tools": [
+      {"type": "function", "function": {"name": "get_stock_price", "description": "Get the latest price for a stock ticker symbol.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}}
+    ],
+    "query": "What is the current price of AAPL?",
+    "expect": {"function": "get_stock_price", "args_contains": {"symbol": "AAPL"}}
+  },
+  {
+    "id": "url_fetch_simple",
+    "category": "simple",
+    "tools": [
+      {"type": "function", "function": {"name": "fetch_url", "description": "Fetch the contents of a URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}}
+    ],
+    "query": "Fetch https://example.com/news and tell me what it says.",
+    "expect": {"function": "fetch_url", "args_contains": {"url": "https://example.com/news"}}
+  },
+  {
+    "id": "convert_units",
+    "category": "simple",
+    "tools": [
+      {"type": "function", "function": {"name": "convert_currency", "description": "Convert an amount from one currency to another.", "parameters": {"type": "object", "properties": {"amount": {"type": "number"}, "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["amount", "from", "to"]}}}
+    ],
+    "query": "Convert 100 USD to NPR.",
+    "expect": {"function": "convert_currency", "args_contains": {"from": "USD", "to": "NPR"}}
+  },
+  {
+    "id": "multiple_pick_weather",
+    "category": "multiple",
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
+      {"type": "function", "function": {"name": "internet_search", "description": "Search the web for current information.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+      {"type": "function", "function": {"name": "send_email", "description": "Send an email.", "parameters": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["to", "subject", "body"]}}}
+    ],
+    "query": "Is it raining in Tokyo today?",
+    "expect": {"function": "get_weather"}
+  },
+  {
+    "id": "multiple_pick_email",
+    "category": "multiple",
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
+      {"type": "function", "function": {"name": "send_email", "description": "Send an email to a recipient.", "parameters": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["to", "subject", "body"]}}}
+    ],
+    "query": "Email alice@example.com with the subject 'Hi' and body 'Hello there'.",
+    "expect": {"function": "send_email", "args_contains": {"to": "alice@example.com"}}
+  },
+  {
+    "id": "multiple_pick_search",
+    "category": "multiple",
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
+      {"type": "function", "function": {"name": "internet_search", "description": "Search the web for current information.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
+    ],
+    "query": "Search the web for the latest SpaceX launch date.",
+    "expect": {"function": "internet_search"}
+  },
+  {
+    "id": "parallel_two_weather",
+    "category": "parallel",
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+    ],
+    "query": "Compare the weather in Paris and London right now.",
+    "expect": {"function": "get_weather", "min_calls": 1}
+  },
+  {
+    "id": "irrelevance_greeting",
+    "category": "irrelevance",
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+    ],
+    "query": "Thanks, that's all I needed!",
+    "expect": {"no_tool": true}
+  },
+  {
+    "id": "irrelevance_chitchat",
+    "category": "irrelevance",
+    "tools": [
+      {"type": "function", "function": {"name": "internet_search", "description": "Search the web for current information.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
+    ],
+    "query": "Tell me a fun fact about the number seven.",
+    "expect": {"no_tool": true}
+  },
+  {
+    "id": "nepal_live_weather",
+    "category": "regression",
+    "tools": [
+      {"type": "function", "function": {"name": "get_nepal_live_context", "description": "Get live, current facts about Nepal (weather, news, prices, events).", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+      {"type": "function", "function": {"name": "internet_search", "description": "Search the world wide web for current information.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+      {"type": "function", "function": {"name": "fetch_url", "description": "Fetch the contents of a URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}}
+    ],
+    "query": "काठमाडौंको अहिलेको मौसम कस्तो छ?",
+    "expect": {"function_any_of": ["get_nepal_live_context", "internet_search"]}
+  },
+  {
+    "id": "nepal_world_fact",
+    "category": "regression",
+    "tools": [
+      {"type": "function", "function": {"name": "get_nepal_live_context", "description": "Get live, current facts about Nepal.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+      {"type": "function", "function": {"name": "internet_search", "description": "Search the world wide web for current information.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+      {"type": "function", "function": {"name": "fetch_url", "description": "Fetch the contents of a URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}}
+    ],
+    "query": "Search for who won the latest Champions League final.",
+    "expect": {"function_any_of": ["internet_search"]}
+  }
+]
