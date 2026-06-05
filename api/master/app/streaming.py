@@ -182,7 +182,13 @@ def _tool_stream_chunks(job: Job, full_text: str, finish_reason: str | None) -> 
         "model": job.model,
     }
     if calls:
-        delta: dict = {"role": "assistant", "tool_calls": to_openai_tool_calls(calls)}
+        tool_calls = to_openai_tool_calls(calls)
+        # OpenAI streaming requires an `index` on each tool_call delta (the SDK
+        # uses it to assemble fragmented calls and marks it required). Without it
+        # strict clients raise a validation error mid-stream.
+        for idx, tc in enumerate(tool_calls):
+            tc["index"] = idx
+        delta: dict = {"role": "assistant", "tool_calls": tool_calls}
         if clean:
             delta["content"] = clean
         return [{**base, "choices": [{"index": 0, "delta": delta, "finish_reason": "tool_calls"}]}]
