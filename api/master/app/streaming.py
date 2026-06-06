@@ -19,7 +19,7 @@ import orjson
 from fastapi import Request
 
 from .queue import Job
-from .tool_calling import parse_tool_calls, to_openai_tool_calls
+from .tool_calling import parse_tool_calls, strip_leaked_markup, to_openai_tool_calls
 
 KEEPALIVE_INTERVAL_S = 15.0
 
@@ -147,12 +147,14 @@ def _assistant_message(job: Job, full_text: str, finish_reason: str | None) -> t
     OpenAI tool_calls array (finish_reason → "tool_calls"); otherwise plain text."""
     if job.tool_mode:
         clean, calls = parse_tool_calls(full_text)
+        clean = strip_leaked_markup(clean)  # drop any echoed <tool_response>/<tool_call>
         if calls:
             return (
                 {"role": "assistant", "content": clean or None,
                  "tool_calls": to_openai_tool_calls(calls)},
                 "tool_calls",
             )
+        return {"role": "assistant", "content": clean}, (finish_reason or "stop")
     return {"role": "assistant", "content": full_text}, (finish_reason or "stop")
 
 
@@ -175,6 +177,7 @@ def _tool_stream_chunks(job: Job, full_text: str, finish_reason: str | None) -> 
     """Final streaming chunk(s) for a buffered tool turn: one tool_calls delta if
     a call was parsed, else the buffered text as a single content delta."""
     clean, calls = parse_tool_calls(full_text)
+    clean = strip_leaked_markup(clean)  # drop any echoed <tool_response>/<tool_call>
     base = {
         "id": "chatcmpl-" + job.id.split("_", 1)[-1],
         "object": "chat.completion.chunk",
@@ -193,5 +196,5 @@ def _tool_stream_chunks(job: Job, full_text: str, finish_reason: str | None) -> 
             delta["content"] = clean
         return [{**base, "choices": [{"index": 0, "delta": delta, "finish_reason": "tool_calls"}]}]
     return [{**base, "choices": [
-        {"index": 0, "delta": {"role": "assistant", "content": full_text},
+        {"index": 0, "delta": {"role": "assistant", "content": clean},
          "finish_reason": finish_reason or "stop"}]}]

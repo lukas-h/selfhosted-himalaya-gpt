@@ -30,6 +30,7 @@ from app.tool_calling import (  # noqa: E402
     build_tool_system_prompt,
     parse_tool_calls,
     render_messages_with_tools,
+    strip_leaked_markup,
     synthesize_fewshot,
     to_openai_tool_calls,
     wants_tools,
@@ -162,6 +163,60 @@ def test_fewshot_count_capped_by_tools():
 # -----------------------------------------------------------------------------
 # History rendering (tool results, prior assistant tool calls)
 # -----------------------------------------------------------------------------
+
+def test_render_uses_answer_exemplar_after_tool_result():
+    """Multi-turn: when the last message is a tool result, the few-shot must be
+    the call->result->ANSWER exemplar (a plain-prose assistant turn), so the
+    model answers instead of echoing <tool_response>."""
+    msgs = [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "call_0", "type": "function",
+             "function": {"name": "get_weather", "arguments": '{"city": "KTM"}'}}]},
+        {"role": "tool", "tool_call_id": "call_0", "content": "22C sunny"},
+    ]
+    out = render_messages_with_tools(msgs, [_weather_tool()["function"]])
+    # an assistant exemplar turn that is plain prose (no tool markup) = the answer demo
+    assert any(m["role"] == "assistant" and m.get("content")
+               and "<tool_call>" not in m["content"] and "<tool_response>" not in m["content"]
+               for m in out)
+    # the synthesized call-only exemplars must NOT be used on an answer turn
+    assert not any("(example) Use `" in (m.get("content") or "") for m in out)
+
+
+def test_render_uses_call_exemplars_for_a_call_turn():
+    """Turn-1 (last message is the user query): use the per-tool call exemplars;
+    every exemplar assistant turn emits a <tool_call> (no plain-answer demo)."""
+    out = render_messages_with_tools([{"role": "user", "content": "weather?"}],
+                                     [_weather_tool()["function"]])
+    assert any("Use `get_weather`" in (m.get("content") or "") for m in out)
+    asst = [m for m in out if m["role"] == "assistant"]
+    assert asst and all("<tool_call>" in (m.get("content") or "") for m in asst)
+
+
+def test_strip_leaked_markup():
+    assert strip_leaked_markup('<tool_response>{"name":"x","content":"y"}</tool_response>') == ""
+    assert strip_leaked_markup("The answer is 42. <tool_call>{\"name\":\"f\"}</tool_call>") == "The answer is 42."
+    assert strip_leaked_markup("plain text") == "plain text"
+    assert "</tool_response>" not in strip_leaked_markup("oops </tool_response> here")
+    assert strip_leaked_markup("") == "" and strip_leaked_markup(None) == ""
+
+
+def test_aggregate_strips_echoed_tool_response():
+    """The reported multi-turn bug: the model echoes <tool_response>; the master
+    must not leak that markup into the message content."""
+    echo = '<tool_response>{"name":"get_weather","content":"22C"}</tool_response>'
+    out = aggregate_chat_completion(_job(True), [_chunk(echo, "stop")], "himalaya-q8")
+    msg = out["choices"][0]["message"]
+    assert "<tool_response>" not in (msg["content"] or "")
+    assert "tool_calls" not in msg  # an echoed response is not a tool call
+
+
+def test_tool_stream_strips_echoed_tool_response():
+    echo = '<tool_response>{"name":"x","content":"y"}</tool_response>'
+    ch = _tool_stream_chunks(_job(True), echo, "stop")[0]
+    assert "<tool_response>" not in (ch["choices"][0]["delta"].get("content") or "")
+
 
 def test_render_tool_role_becomes_tool_response():
     msgs = [
