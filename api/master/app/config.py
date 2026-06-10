@@ -25,10 +25,9 @@ class Settings(BaseSettings):
     # enforce rate_limit_rpm.
     rate_limit_burst_rps: int = 30
     # Master gives up on a queued job after this many seconds and frees the
-    # slot. Keep this close to typical client timeouts (curl/httpx default
-    # 30s) — longer values let abandoned-curl phantom jobs accumulate and
-    # saturate the per-slug queue.
-    user_request_timeout_s: int = 30
+    # slot. This applies globally to every model slug. Long eval requests need
+    # enough room for queue wait + generation time.
+    user_request_timeout_s: int = 240
     worker_poll_timeout_s: int = 55
 
     @property

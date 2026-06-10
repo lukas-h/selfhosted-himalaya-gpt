@@ -37,7 +37,7 @@ The most important ones:
 - `MODEL_SLUGS` — must match the per-quant llama services in `api/worker/docker-compose.yml` (`llama-bf16`, `llama-q8`, `llama-q4`).
 - `MAX_CONCURRENT_PER_WORKER` (default `3`) — match the worker-side `MAX_CONCURRENT`; the default worker has three single-parallel llama services.
 - `RATE_LIMIT_RPM` (default `1200`) and `RATE_LIMIT_BURST_RPS` (default `30`, `0` to disable) — both enforced simultaneously per bearer token (sha256-hashed, not per-IP). The tighter window wins per request.
-- `USER_REQUEST_TIMEOUT_S` (default `30`) — keep close to typical client timeouts; longer values let abandoned curls saturate the queue with phantom jobs.
+- `USER_REQUEST_TIMEOUT_S` (default `240`) — global deadline for every model slug; covers queue wait plus generation time.
 
 ## Local run (no Docker)
 
@@ -63,6 +63,7 @@ If Cloudflare is in front of Coolify, two things to know:
 
 - Long-poll lives at 55s by default (`WORKER_POLL_TIMEOUT_S`), well under the 100s Cloudflare idle ceiling.
 - The streaming response sends a `: keepalive\n\n` SSE comment every 15s if the model takes a while to start producing tokens.
+- Non-streaming requests can run up to `USER_REQUEST_TIMEOUT_S`; make sure any reverse proxy in front of the master allows that much upstream response time, or use `stream=true`.
 
 ## Caveats
 

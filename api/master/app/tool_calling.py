@@ -197,18 +197,47 @@ def _render_history_message(msg: dict[str, Any]) -> dict[str, Any] | None:
     return msg
 
 
+def _needs_answer(messages: list[dict[str, Any]]) -> bool:
+    """True when the turn we're about to generate follows a tool result — the
+    model should answer in plain language, NOT emit another call or (as the 0.5B
+    otherwise does) echo the raw <tool_response> back."""
+    return bool(messages) and (messages[-1].get("role") == "tool")
+
+
+def _answer_exemplar() -> list[dict[str, Any]]:
+    """A full call -> tool_response -> natural-language answer exemplar. Teaches
+    the 0.5B to ANSWER from a tool result; without it the model parrots the
+    <tool_response> markup back (verified), which breaks an agent's tool loop."""
+    return [
+        {"role": "user", "content": "(example) What's the weather in Paris?"},
+        {"role": "assistant",
+         "content": '<tool_call>{"name": "get_current_weather", "arguments": {"city": "Paris"}}</tool_call>'},
+        {"role": "user",
+         "content": '<tool_response>{"name": "get_current_weather", "content": "Paris: 18°C, light rain."}</tool_response>'},
+        {"role": "assistant", "content": "It's currently 18°C with light rain in Paris."},
+    ]
+
+
 def render_messages_with_tools(
     messages: list[dict[str, Any]],
     functions: list[dict[str, Any]],
     tool_choice: Any = None,
     n_fewshot: int = DEFAULT_FEWSHOT,
 ) -> list[dict[str, Any]]:
-    """Produce the message list to send downstream: tool system prompt, then
-    synthesized few-shot exemplars, then the (tool-rendered) real conversation."""
+    """Produce the message list to send downstream: the tool system prompt, an
+    ADAPTIVE few-shot, then the (tool-rendered) real conversation.
+
+    The few-shot adapts to what we're generating next: if the conversation ends
+    with a tool result, use the call->result->answer exemplar so the model
+    answers (instead of echoing <tool_response>); otherwise use the per-tool
+    call exemplars so it emits a <tool_call>."""
     out: list[dict[str, Any]] = [
         {"role": "system", "content": build_tool_system_prompt(functions, tool_choice)}
     ]
-    out.extend(synthesize_fewshot(functions, n_fewshot))
+    if _needs_answer(messages):
+        out.extend(_answer_exemplar())
+    else:
+        out.extend(synthesize_fewshot(functions, n_fewshot))
     for msg in messages:
         rendered = _render_history_message(msg)
         if rendered is not None:
@@ -409,6 +438,23 @@ def _strip_spans(text: str, spans: list[tuple[int, int]]) -> str:
         last = end
     out.append(text[last:])
     return "".join(out).strip()
+
+
+_LEAKED_MARKUP_RE = re.compile(
+    r"<tool_response>.*?</tool_response>|<tool_call>.*?</tool_call>", re.DOTALL)
+_BARE_TOOL_TAG_RE = re.compile(r"</?tool_(?:call|response)>")
+
+
+def strip_leaked_markup(text: str | None) -> str:
+    """Remove any Hermes tool markup the model echoed into user-facing content.
+    The 0.5B sometimes parrots <tool_response>/<tool_call> back instead of
+    answering; this is the safety net (on top of the answer exemplar) so internal
+    tags never reach the client."""
+    if not text:
+        return text or ""
+    text = _LEAKED_MARKUP_RE.sub("", text)
+    text = _BARE_TOOL_TAG_RE.sub("", text)
+    return text.strip()
 
 
 def to_openai_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
