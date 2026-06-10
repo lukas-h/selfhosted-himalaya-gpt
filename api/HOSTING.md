@@ -119,7 +119,7 @@ Other knobs you can leave at default unless you hit them:
 | `MAX_QUEUE_DEPTH`           | `32`                                          | Per-slug queue size before requests get rejected with 503.            |
 | `RATE_LIMIT_RPM`            | `1200`                                        | Sustained per-key (sha256-hashed bearer) requests/minute.             |
 | `RATE_LIMIT_BURST_RPS`      | `30`                                          | Per-second burst cap on top of RPM. Set to 0 to disable.              |
-| `USER_REQUEST_TIMEOUT_S`    | `30`                                          | Match typical client timeouts; longer values let abandoned curls saturate the queue. |
+| `USER_REQUEST_TIMEOUT_S`    | `240`                                         | Global deadline for every model slug; covers queue wait plus generation time. |
 | `WORKER_POLL_TIMEOUT_S`     | `55`                                          | Long-poll deadline; keep under Cloudflare's 100 s default.            |
 
 Bring it up:
@@ -281,9 +281,9 @@ There's no built-in load balancer — the master just hands a job to whichever w
 
 **`/readyz` keeps returning 503 "no recent worker poll"** — the worker hasn't connected yet (still building, hit a build error, or the `WORKER_TOKEN` doesn't match). Check `docker compose logs agent` on the worker side.
 
-**Requests time out at 30 seconds with 504** — master's accepting requests but no worker is polling for that slug, or every worker is saturated. The 30 s deadline is `USER_REQUEST_TIMEOUT_S` (matched to typical client timeouts to keep the queue clean under abandoned bursts).
+**Requests time out with 504** — master's accepting requests but no worker is polling for that slug, every worker is saturated, or generation exceeded `USER_REQUEST_TIMEOUT_S`. The default deadline is 240 s and applies to every model slug.
 
-**`HTTP 503 "queue full, try again"`** — the per-slug `MAX_QUEUE_DEPTH=32` is saturated. Either real load is too high (raise the cap) or you fired a burst whose clients abandoned but jobs are still draining. With the default 30 s timeout phantoms expire fast.
+**`HTTP 503 "queue full, try again"`** — the per-slug `MAX_QUEUE_DEPTH=32` is saturated. Either real load is too high (raise the cap) or you fired a burst whose clients abandoned but jobs are still draining.
 
 **`HTTP 429 "rate limit exceeded: N per 1 second/minute"`** — per-token cap; defaults are 30/sec + 1200/min. Bump `RATE_LIMIT_RPM` / `RATE_LIMIT_BURST_RPS` in master env.
 
