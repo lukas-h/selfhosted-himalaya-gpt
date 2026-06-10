@@ -291,7 +291,7 @@ There's no built-in load balancer — the master just hands a job to whichever w
 
 **SYCL build fails on `oneapi`/`igc` packages** — the pinned base image (`intel/deep-learning-essentials:2025.3.3-0-devel-ubuntu24.04`) is a verified Intel release. If you're on a non-x86 host or an older kernel, see [`llama.cpp/docs/backend/SYCL.md`](../llama.cpp/docs/backend/SYCL.md) and consider switching all 3 services to the Vulkan or CPU target.
 
-**LFS quota errors during clone** — the `api` branch has the GGUFs gitignored to avoid this; if you're somehow on a branch that has them tracked, either `--filter=blob:none` your clone or set `GIT_LFS_SKIP_SMUDGE=1`.
+**LFS quota errors during clone** — root GGUFs are tracked through Git LFS for local runtime use, but `.lfsconfig` excludes `*.gguf` from default fetches so Coolify/API deploys can clone without downloading model blobs. If you actually need the local GGUF files, run `git -c lfs.fetchexclude= lfs pull --include="*.gguf" --exclude=""`.
 
 **Cert errors / `502 Bad Gateway`** — TLS is on your reverse proxy (Caddy / Traefik / etc.), not on the master container. Master listens plaintext on `:8000` for the proxy to hit. Make sure the proxy forwards `X-Forwarded-For` or rate limiting becomes per-IP-of-the-proxy (everyone looks the same).
 

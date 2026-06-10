@@ -39,8 +39,12 @@ If you don't have Git LFS yet:
 ```bash
 sudo apt install -y git-lfs   # Debian/Ubuntu
 git lfs install
-git lfs pull                  # downloads the .gguf files
+git -c lfs.fetchexclude= lfs pull --include="*.gguf" --exclude=""
 ```
+
+The repo defaults to skipping GGUF downloads during clone so API-only deploys do
+not consume GitHub LFS bandwidth. Use the explicit command above when you want
+the local model files.
 
 ---
 
